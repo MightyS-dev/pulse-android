@@ -1,6 +1,7 @@
 // Shared Maven publishing setup for the library modules. Group and version come from the root build
 // (group) and gradle/libs.versions.toml (pulse); the artifact id is the module name.
-// No signing and no remote repository: the only target is a local directory given with -PpulsePublishRepo=<dir>.
+// No remote repository: the only target is a local directory given with -PpulsePublishRepo=<dir>.
+// Signing is off unless PULSE_SIGNING_KEY is set in the environment (see the signing block at the end).
 apply(plugin = "maven-publish")
 
 // What Maven Central shows (POM name, description, url).
@@ -80,5 +81,17 @@ if (plugins.hasPlugin("com.android.library")) {
                 pom { pulseMetadata() }
             }
         }
+    }
+}
+
+// Optional PGP signing, for a release only. The ASCII-armoured private key is read from the environment, never from
+// a file in this tree: PULSE_SIGNING_KEY holds the key, PULSE_SIGNING_PASSWORD its passphrase (may be empty).
+// Without PULSE_SIGNING_KEY nothing here has any effect: no plugin is applied and no task is added.
+val pulseSigningKey: String? = System.getenv("PULSE_SIGNING_KEY")?.takeIf { it.isNotBlank() }
+if (pulseSigningKey != null) {
+    apply(plugin = "signing")
+    extensions.configure<org.gradle.plugins.signing.SigningExtension> {
+        useInMemoryPgpKeys(pulseSigningKey, System.getenv("PULSE_SIGNING_PASSWORD") ?: "")
+        sign(extensions.getByType<PublishingExtension>().publications)
     }
 }

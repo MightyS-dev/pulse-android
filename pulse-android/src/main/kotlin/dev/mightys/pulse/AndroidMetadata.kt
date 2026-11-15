@@ -14,6 +14,13 @@ internal object AndroidMetadata {
         return (if (parts.size == 3 && parts[2].trimStart('0').isEmpty()) parts.take(2) else parts).joinToString(".")
     }
 
+    fun appVersion(versionName: String?, buildNumber: String?): String =
+        versionName?.takeIf { it.isNotBlank() } ?: buildNumber?.takeIf { it.isNotBlank() } ?: "0"
+
+    fun deviceModel(model: String?): String = model?.takeIf { it.isNotBlank() } ?: "Android"
+
+    fun localeTag(locale: Locale): String = locale.toLanguageTag().ifBlank { "und" }
+
     fun certificateDigest(bytes: ByteArray?): String = if (bytes == null) "" else {
         MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 255) }
     }
@@ -24,8 +31,8 @@ internal object AndroidMetadata {
         val build = if (Build.VERSION.SDK_INT >= 28) packageInfo?.longVersionCode else packageInfo?.versionCode?.toLong()
         val result = linkedMapOf(
             "platform" to "mobile", "osName" to "Android", "osVersion" to numericRelease(Build.VERSION.RELEASE),
-            "appVersion" to (packageInfo?.versionName ?: ""), "appBuildNumber" to (build?.toString() ?: ""),
-            "deviceModel" to (Build.MODEL ?: ""), "locale" to Locale.getDefault().toLanguageTag(),
+            "appVersion" to appVersion(packageInfo?.versionName, build?.toString()), "appBuildNumber" to (build?.toString() ?: ""),
+            "deviceModel" to deviceModel(Build.MODEL), "locale" to localeTag(Locale.getDefault()),
         )
         if (includeIdentity) {
             result["bundleId"] = context.packageName

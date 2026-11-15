@@ -33,8 +33,9 @@ class PrivacyTest {
         h.client.setUser("private.synthetic.raw"); h.client.track("one"); h.settle()
         assertTrue(storage.files.values.none { it.toString(Charsets.UTF_8).contains("private.synthetic.raw") })
         h.flush(); assertEquals(Hash.hex("private.synthetic.raw"), h.events.single()["userHash"])
-        h.client.setUser(null); h.send("cleared"); assertNull(h.events.last()["userHash"])
-        h.client.setUser(""); h.send("empty"); assertNull(h.events.last()["userHash"])
+        h.client.setUser(null); h.send("cleared"); assertNotEquals(Hash.hex("private.synthetic.raw"), h.events.last()["userHash"])
+        assertNotNull(h.events.last()["userHash"])
+        h.client.setUser(""); h.send("empty"); assertNotNull(h.events.last()["userHash"])
     }
 
     @Test fun optOutPersistsClearsCancelsAndIgnoresLateCompletion() {
@@ -49,7 +50,7 @@ class PrivacyTest {
         val restarted = Harness(storage = storage); assertTrue(restarted.client.optOut)
         restarted.send("ignored"); assertTrue(restarted.events.isEmpty())
         restarted.client.optOut = false; restarted.settle(); assertFalse(restarted.client.optOut)
-        restarted.send("anonymous"); assertNull(restarted.events.single()["userHash"])
+        restarted.send("anonymous"); assertNotNull(restarted.events.single()["userHash"])
     }
 
     @Test fun privacyReadsAndWritesFailClosedThenRecover() {

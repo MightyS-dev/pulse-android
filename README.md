@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.1")
+    implementation("dev.mightys:pulse-android:0.9.2")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.1"
+    implementation "dev.mightys:pulse-android:0.9.2"
 }
 ```
 
@@ -39,9 +39,15 @@ Pulse.initialize(this, "YOUR_APP_KEY")
 Pulse.track("level.complete")
 Pulse.track("purchase", 4.99, mapOf("sku" to "gems_100"))
 
-Pulse.setUser("your-internal-user-id") // optional
-Pulse.setUser(null)                    // clears the user for later signals
-Pulse.flush()                          // nonblocking
+Pulse.flush() // nonblocking
+```
+
+Users are counted without any further setup. If you have your own user id, you can use it instead of the anonymous
+install id (optional):
+
+```kotlin
+Pulse.setUser("your-internal-user-id") // replaces the anonymous install id
+Pulse.setUser(null)                    // back to the anonymous install id
 ```
 
 The same from Java:
@@ -53,7 +59,7 @@ import java.util.Collections;
 Pulse.initialize(this, "YOUR_APP_KEY");
 Pulse.track("level.complete");
 Pulse.track("purchase", 4.99, Collections.singletonMap("sku", "gems_100"));
-Pulse.setUser("your-internal-user-id");
+Pulse.setUser("your-internal-user-id"); // optional, replaces the anonymous install id
 Pulse.flush(() -> { /* runs on the SDK worker */ });
 ```
 
@@ -69,10 +75,14 @@ and the SDK name and version. The app's package name and signing certificate has
 
 Sessions use a random id that changes after 30 minutes of inactivity.
 
-User id: optional. If you call `setUser`, the id is hashed with SHA-256 on the device. The raw id is never stored or sent.
-The hash is pseudonymous and can link one user's signals. Without `setUser`, no user hash is sent.
+Anonymous install id: random, created by the SDK on first launch, stored only in the app's own storage
+(`noBackupFilesDir/mightys-pulse`), deleted with the app and replaced after opt-out. It is sent only as a SHA-256 hash,
+is not derived from any device identifier and is not shared between apps.
 
-Never sent or read: advertising id, Android id, IMEI, serial number, device name, account names, persistent install ids,
+User id: optional. If you call `setUser`, the id is hashed with SHA-256 on the device and replaces the install id hash.
+The raw id is never stored or sent. The hash is pseudonymous and can link one user's signals.
+
+Never sent or read: advertising id, Android id, IMEI, serial number, device name, account names,
 location, contacts, installed apps. There are no cookies.
 
 IP address: the SDK does not read or send the device's IP address as data. As with any HTTP request, the server sees the
@@ -138,7 +148,7 @@ decide yourself. In the dashboard, the test mode switch chooses which of the two
 ## Opt-out
 
 `Pulse.optOut = true` (Java: `Pulse.setOptOut(true)`) is app-wide and remembered across restarts. It stops collection at
-once, clears queued signals and the user hash, and cancels active requests where possible. Requests already sent cannot
+once, clears queued signals, the user hash and the install id, and cancels active requests where possible. Requests already sent cannot
 be recalled. `Pulse.optOut = false` resumes collection. Before `initialize` the getter returns true, so do not write it
 back into a saved preference. If the stored choice cannot be read, the SDK counts as opted out.
 

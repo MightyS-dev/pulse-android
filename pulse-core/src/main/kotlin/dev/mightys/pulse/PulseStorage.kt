@@ -26,7 +26,7 @@ public class PulseFileStorage(private val directory: File) : PulseStorage {
 
     override fun read(name: String): ByteArray? {
         val file = file(name)
-        val limit = when (name) { "opt-out" -> 2; "privacy-generation" -> 37; else -> Snapshot.MAX_BYTES + 1 }
+        val limit = when (name) { "opt-out" -> 2; "privacy-generation" -> 37; "install-id" -> 33; else -> Snapshot.MAX_BYTES + 1 }
         val input = try { FileInputStream(file) } catch (error: java.io.FileNotFoundException) {
             if (!file.exists() && (!directory.exists() || directory.isDirectory)) return null
             throw error

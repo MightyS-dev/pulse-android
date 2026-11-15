@@ -1,6 +1,8 @@
 package dev.mightys.pulse
 
 import java.net.URI
+import java.security.SecureRandom
+import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -44,6 +46,7 @@ public class PulseClient @JvmOverloads constructor(
     private var activeId: String? = null
     private var timer: PulseCancellation? = null
     private var pumpQueued = false
+    private var installHash: String? = null
     private data class Waiter(val token: String, var target: Set<String>?, val completion: Runnable)
     private val waiters = mutableListOf<Waiter>()
 
@@ -54,7 +57,7 @@ public class PulseClient @JvmOverloads constructor(
             val requestedRevision = synchronized(privacyLock) { privacy.set(2); revision.incrementAndGet() }
             enqueue {
                 if (requestedRevision != revision.get()) return@enqueue
-                capture.reset(); early.clear(); queue.clear(); cancelActive()
+                capture.reset(); early.clear(); queue.clear(); cancelActive(); installHash = null
                 desiredPreference = value; preferenceRevision = requestedRevision
                 generation = UUID.randomUUID().toString()
                 persistPreference(); completeWaiters(); requestPump()
@@ -180,6 +183,7 @@ public class PulseClient @JvmOverloads constructor(
             if (desired) store.replace("opt-out", byteArrayOf(1))
             store.replace("privacy-generation", generation.toByteArray(Charsets.UTF_8))
             queueName?.let(store::remove)
+            store.remove(INSTALL_ID)
             if (!desired) store.replace("opt-out", byteArrayOf(0))
             desiredPreference = null
             synchronized(privacyLock) { if (preferenceRevision == revision.get()) privacy.set(if (desired) 2 else 1) }
@@ -191,8 +195,29 @@ public class PulseClient @JvmOverloads constructor(
     }
 
     private fun append(input: Input) {
-        val json = SignalJson.encode(input, system, options.debug == true) ?: return
+        val hashed = if (input.userHash != null) input else input.copy(userHash = installHash())
+        val json = SignalJson.encode(hashed, system, options.debug == true) ?: return
         queue.entries.add(Entry(UUID.randomUUID().toString(), input.timestamp, json))
+    }
+
+    /** SHA-256 of the anonymous install id. Falls back to an in-memory id when storage fails, without retrying. */
+    private fun installHash(): String {
+        installHash?.let { return it }
+        var id: String? = null
+        var readable = true
+        val store = storage
+        if (store != null) {
+            try { id = store.read(INSTALL_ID)?.let(JsonReader::utf8)?.takeIf { INSTALL_ID_FORMAT.matches(it) } }
+            catch (_: Exception) { readable = false }
+        }
+        if (id == null) {
+            val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
+            id = bytes.joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 255) }
+            if (store != null && readable) {
+                try { store.replace(INSTALL_ID, id.toByteArray(Charsets.UTF_8)) } catch (_: Exception) { warn("Install id not saved.") }
+            }
+        }
+        return Hash.hex(id).also { installHash = it }
     }
 
     private fun load(): Boolean {
@@ -331,6 +356,8 @@ public class PulseClient @JvmOverloads constructor(
     private fun warn(message: String) { if (options.debug == true) try { logger.warn(message) } catch (_: Exception) { /* Diagnostics cannot affect the app. */ } }
 
     private companion object {
+        const val INSTALL_ID = "install-id"
+        val INSTALL_ID_FORMAT = Regex("^[0-9a-f]{32}$")
         val SYSTEM_KEYS = setOf("platform", "osName", "osVersion", "appVersion", "appBuildNumber", "deviceModel", "locale")
         val IDENTITY_KEYS = setOf("bundleId", "signingCertSha256")
         fun millis(seconds: Double): Long = (seconds * 1000).toLong()

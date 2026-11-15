@@ -40,4 +40,17 @@ class AndroidPolicyTest {
         Pulse.flush(); assertFalse(Pulse.flush(0))
         assertTrue(Pulse.optOut)
     }
+    @Test fun appVersionFallsBackToBuildNumberAndNeverStaysEmpty() {
+        assertEquals("1.2.3", AndroidMetadata.appVersion("1.2.3", "45"))
+        assertEquals("45", AndroidMetadata.appVersion(null, "45"))
+        assertEquals("45", AndroidMetadata.appVersion("", "45"))
+        assertEquals("0", AndroidMetadata.appVersion(null, null))
+    }
+    @Test fun deviceModelAndLocaleAreNeverEmpty() {
+        assertEquals("Pixel 9", AndroidMetadata.deviceModel("Pixel 9"))
+        assertEquals("Android", AndroidMetadata.deviceModel(null))
+        assertEquals("Android", AndroidMetadata.deviceModel(" "))
+        assertEquals("und", AndroidMetadata.localeTag(java.util.Locale.ROOT))
+        assertEquals("sr-RS", AndroidMetadata.localeTag(java.util.Locale.forLanguageTag("sr-RS")))
+    }
 }
