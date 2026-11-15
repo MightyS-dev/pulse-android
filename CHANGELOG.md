@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.1] - 2026-11-15
+
+- Clearer package descriptions on Maven Central and a link to the documentation in the README.
+
 ## [0.9.0] - 2026-11-15
 
 Initial public release.
@@ -19,4 +23,5 @@ Initial public release.
 - Android library, minimum SDK 21, with the `INTERNET` permission merged automatically and no consumer ProGuard or R8
   rules needed.
 
+[0.9.1]: https://github.com/MightyS-dev/pulse-android/releases/tag/0.9.1
 [0.9.0]: https://github.com/MightyS-dev/pulse-android/releases/tag/0.9.0

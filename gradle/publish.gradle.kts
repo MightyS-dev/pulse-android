@@ -4,7 +4,6 @@
 apply(plugin = "maven-publish")
 
 // What Maven Central shows (POM name, description, url).
-val pulseTagline = "Privacy-first analytics for apps and games. No device IDs, offline queue, tiny."
 val pulseHomepage = "https://pulse.mightys.dev"
 val pulseRepository = "https://github.com/MightyS-dev/pulse-android"
 val pulseAuthor = "MightyS Team"
@@ -14,8 +13,8 @@ val moduleName = mapOf(
     "pulse-android" to "MightyS Pulse for Android",
 )
 val moduleDescription = mapOf(
-    "pulse-core" to "$pulseTagline Platform-independent JVM core of the Android SDK (dependency of pulse-android, no Android classes).",
-    "pulse-android" to "$pulseTagline Android SDK for Kotlin and Java, minimum SDK 21.",
+    "pulse-core" to "JVM core of MightyS Pulse for Android, without Android classes. Add dev.mightys:pulse-android to your app; this module comes with it.",
+    "pulse-android" to "Privacy-first analytics for Android apps and games, for Kotlin and Java. Named events, no advertising ID or device IDs, offline queue. Minimum SDK 21.",
 )
 
 fun org.gradle.api.publish.maven.MavenPom.pulseMetadata() {
@@ -39,7 +38,7 @@ val licenseEntry = "LICENSE-${project.name}.md"
 // Minimal javadoc jar: a README describing where the KDoc lives. The KDoc ships in the -sources.jar of each artifact.
 val javadocReadme by tasks.registering {
     val out = layout.buildDirectory.file("generated/javadoc-jar/README.md")
-    val text = "# ${moduleName.getValue(project.name)} $version\n\n$pulseTagline\n\n" +
+    val text = "# ${moduleName.getValue(project.name)} $version\n\n${moduleDescription.getValue(project.name)}\n\n" +
         "The public API is documented with KDoc in the -sources.jar of this release and in the README of the project: $pulseHomepage\n"
     inputs.property("text", text)
     outputs.file(out)

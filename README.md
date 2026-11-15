@@ -1,6 +1,8 @@
 # MightyS Pulse for Android
 
-Privacy-first analytics for apps and games. No device IDs, offline queue, tiny.
+Privacy-first analytics for Android apps and games. No advertising ID, no device IDs, offline queue.
+
+Docs: https://pulse.mightys.dev/docs/kotlin/
 
 MightyS Pulse lets an Android app or game send named signals (events) with an optional number and a few properties, and
 see them in a dashboard. The SDK never reads an advertising id or any device identifier, uses no cookies and does no
@@ -13,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.0")
+    implementation("dev.mightys:pulse-android:0.9.1")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.0"
+    implementation "dev.mightys:pulse-android:0.9.1"
 }
 ```
 
@@ -98,7 +100,7 @@ Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(
 | `maxQueueSize` | 1000 | Signals kept offline. 1 through 10000. The oldest are dropped first. |
 | `maxQueueAgeDays` | 7 | Days a queued signal is kept. Capped at 29. |
 | `gzip` | true | Compresses bodies larger than 1024 bytes. |
-| `debug` | app debuggable flag | Marks signals as test data and logs short diagnostics to Logcat, never signal contents. |
+| `debug` | follows the build, see Test mode | Marks signals as test data and logs short diagnostics to Logcat, never signal contents. |
 | `sendAppIdentity` | false | Adds the package name and first signing certificate SHA-256. |
 | `appVersion` | package version name | Overrides the app version. |
 
