@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.2")
+    implementation("dev.mightys:pulse-android:0.9.3")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.2"
+    implementation "dev.mightys:pulse-android:0.9.3"
 }
 ```
 
@@ -68,10 +68,25 @@ main thread. Hashing, disk work and sending run on background threads.
 
 ## What is sent and what is never sent
 
-Sent with every signal: your event name, optional number and properties, a UTC capture time, the debug flag, a random
-session id, platform `mobile`, OS name and numeric version, app version and build, device model (`Build.MODEL`), locale,
-and the SDK name and version. The app's package name and signing certificate hash are sent only if you set
-`sendAppIdentity = true`.
+Sent with every signal (the `system` object), and only values the device can give; anything unknown is left out:
+
+| Group | Fields |
+| --- | --- |
+| Device | `platform` (mobile), `deviceType` (phone, tablet, tv, watch, car), `deviceBrand` (`Build.MANUFACTURER`), `deviceModel`, `architecture`, `osName`, `osVersion`, `osApiLevel`, `isSimulator` |
+| Screen | `screenWidth`, `screenHeight` (dp), `screenScale`, `screenWidthPx`, `screenHeightPx`, `screenDpi`, `screenCount`, `orientation` |
+| Settings and accessibility | `colorScheme`, `layoutDirection`, `timeZone`, `utcOffsetMinutes`, `language`, `preferredLanguage`, `region`, `locale`, `fontScale`, `fontWeightAdjustment`, `boldText`, `reduceMotion`, `reduceTransparency`, `invertColors`, `increaseContrast`, `differentiateWithoutColor`, `connectionType` (wifi, cellular, ethernet, none, other), `lowPowerMode` |
+| App and install | `appName`, `appVersion`, `appBuildNumber`, `bundleId`, `installSource` (playstore, galaxystore, amazon, sideload, debug, other), `isDebugBuild`, `sdkName`, `sdkVersion` |
+| Usage statistics | `firstSessionDate`, `totalSessionsCount`, `distinctDaysUsed`, `distinctDaysUsedLastMonth`, `previousSessionSeconds`, `averageSessionSeconds`, `sessionSeconds`, `isNewInstall` (first session after install only) |
+
+Besides these, every signal carries your event name, optional number and properties, a UTC capture time, the debug flag
+and a random session id. The signing certificate hash is sent only if you set `sendAppIdentity = true`. Reading the
+connection type needs the `ACCESS_NETWORK_STATE` permission, which the library declares (a normal permission with no
+prompt). The statistics are kept in one small file in the app's own storage next to the install id and are deleted with
+it on opt-out.
+
+Automatic signals: `pulse.session_started` (each new session), `pulse.new_install` (first launch after install) and
+`pulse.app_updated` (first launch after the app version or build changed, with `previousVersion` and `previousBuild`).
+Each is sent at most once per session, so they are rare. They respect opt-out and the debug flag like any signal.
 
 Sessions use a random id that changes after 30 minutes of inactivity.
 
@@ -111,7 +126,7 @@ Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(
 | `maxQueueAgeDays` | 7 | Days a queued signal is kept. Capped at 29. |
 | `gzip` | true | Compresses bodies larger than 1024 bytes. |
 | `debug` | follows the build, see Test mode | Marks signals as test data and logs short diagnostics to Logcat, never signal contents. |
-| `sendAppIdentity` | false | Adds the package name and first signing certificate SHA-256. |
+| `sendAppIdentity` | false | Adds the first signing certificate SHA-256 (the package name is always sent as `bundleId`). |
 | `appVersion` | package version name | Overrides the app version. |
 
 **Test mode.** Every signal carries a test flag. By default it follows the build: debuggable builds (what Android Studio

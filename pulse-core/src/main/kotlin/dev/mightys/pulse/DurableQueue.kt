@@ -32,12 +32,24 @@ internal class CaptureState {
     private var session = ""
     private var lastActivity = Long.MIN_VALUE
     private var userHash: String? = null
+    /** Start of the current session, or zero before the first capture. */
+    var sessionStart = 0L
+        private set
+    /** Time of the latest capture, or zero before the first capture. */
+    val lastSeen: Long get() = if (lastActivity == Long.MIN_VALUE) 0L else lastActivity
 
     fun setUser(identifier: String?) { userHash = identifier?.takeIf { it.isNotEmpty() }?.let(Hash::hex) }
-    fun capture(at: Long, type: String?, value: Double?, props: Map<String, Any?>): Input {
-        if (lastActivity == Long.MIN_VALUE || at - lastActivity >= 1800000) session = UUID.randomUUID().toString()
+    fun capture(at: Long, type: String?, value: Double?, props: Map<String, Any?>, local: Map<String, String> = emptyMap(),
+        extra: Map<String, String>? = null): Input {
+        val fresh = lastActivity == Long.MIN_VALUE || at - lastActivity >= 1800000
+        var previousStart = 0L
+        var previousEnd = 0L
+        if (fresh) {
+            if (lastActivity != Long.MIN_VALUE && sessionStart > 0) { previousStart = sessionStart; previousEnd = lastActivity }
+            session = UUID.randomUUID().toString(); sessionStart = at
+        }
         lastActivity = at
-        return Input(at, session, userHash, type, value, props)
+        return Input(at, session, userHash, type, value, props, fresh, sessionStart, previousStart, previousEnd, local, extra)
     }
-    fun reset() { userHash = null; session = UUID.randomUUID().toString(); lastActivity = Long.MIN_VALUE }
+    fun reset() { userHash = null; session = UUID.randomUUID().toString(); lastActivity = Long.MIN_VALUE; sessionStart = 0L }
 }

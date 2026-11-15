@@ -60,13 +60,15 @@ class FakeTransport : PulseTransport {
 }
 class Harness(val options: PulseOptions = PulseOptions(), val storage: PulseStorage = FakeStorage(),
     val clock: FakeClock = FakeClock(), initialize: Boolean = true, key: String = "synthetic-key",
-    random: PulseRandom = PulseRandom { 0.5 }, logger: PulseLogger = PulseLogger {}) {
+    random: PulseRandom = PulseRandom { 0.5 }, logger: PulseLogger = PulseLogger {},
+    automatic: Boolean = false, val dynamic: PulseDynamicValues = PulseDynamicValues { emptyMap() },
+    val env: Map<String, String> = mapOf("platform" to "mobile", "osName" to "Android")) {
     val scheduler = FakeScheduler(clock)
     val transport = FakeTransport()
-    val client = PulseClient(clock, scheduler, transport, random, logger)
+    val client = PulseClient(clock, scheduler, transport, random, logger).also { it.automaticSignals = automatic }
     init { if (initialize) initialize(key) }
     fun initialize(key: String = "synthetic-key") {
-        client.initialize(key, options, storage, PulseEnvironment { mapOf("platform" to "mobile", "osName" to "Android") })
+        client.initialize(key, options, storage, PulseEnvironment { env }, false, dynamic)
         settle()
     }
     fun settle() { scheduler.drain() }
@@ -75,7 +77,9 @@ class Harness(val options: PulseOptions = PulseOptions(), val storage: PulseStor
     fun send(type: String? = "event", value: Double? = null, props: Map<String, *>? = null) {
         client.track(type, value, props); flush()
     }
-    val events: List<Map<*, *>> get() = transport.requests.flatMap(::events)
+    val allEvents: List<Map<*, *>> get() = transport.requests.flatMap(::events)
+    /** Events without the automatic pulse.* signals. */
+    val events: List<Map<*, *>> get() = allEvents.filter { !(it["type"] as String).startsWith("pulse.") }
     companion object {
         fun json(request: PulseRequest): ByteArray = if (request.gzip) Gzip.decode(request.body)!! else request.body
         fun events(request: PulseRequest): List<Map<*, *>> = (JsonReader.parse(json(request).toString(Charsets.UTF_8)) as List<*>).map { it as Map<*, *> }

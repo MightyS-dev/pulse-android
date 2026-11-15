@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.3] - 2026-11-15
+
+- Every signal now carries the non-sensitive device, screen, settings, accessibility, app and install details Android can
+  give (see "What is sent" in the README), plus simple usage statistics such as sessions and days used.
+- Three automatic signals: `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`, at most one per session.
+- The package name is sent by default as `bundleId`. The library declares the `ACCESS_NETWORK_STATE` permission to read
+  the connection type.
+
 ## [0.9.2] - 2026-11-15
 
 - Users are counted without any setup: the SDK sends a random anonymous install id (hashed) until you call `setUser`.

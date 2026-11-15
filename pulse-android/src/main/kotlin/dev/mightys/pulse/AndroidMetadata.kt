@@ -1,6 +1,7 @@
 package dev.mightys.pulse
 
 import android.content.Context
+import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
 import java.security.MessageDigest
@@ -29,16 +30,62 @@ internal object AndroidMetadata {
     fun system(context: Context, includeIdentity: Boolean): Map<String, String> {
         val packageInfo = try { context.packageManager.getPackageInfo(context.packageName, 0) } catch (_: Exception) { null }
         val build = if (Build.VERSION.SDK_INT >= 28) packageInfo?.longVersionCode else packageInfo?.versionCode?.toLong()
+        val debuggable = context.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
         val result = linkedMapOf(
             "platform" to "mobile", "osName" to "Android", "osVersion" to numericRelease(Build.VERSION.RELEASE),
             "appVersion" to appVersion(packageInfo?.versionName, build?.toString()), "appBuildNumber" to (build?.toString() ?: ""),
             "deviceModel" to deviceModel(Build.MODEL), "locale" to localeTag(Locale.getDefault()),
+            "bundleId" to context.packageName, "osApiLevel" to Build.VERSION.SDK_INT.toString(),
+            "isSimulator" to isEmulator(Build.FINGERPRINT, Build.HARDWARE, Build.PRODUCT).toString(),
+            "isDebugBuild" to debuggable.toString(),
+            "installSource" to installSource(debuggable, installer(context)),
         )
-        if (includeIdentity) {
-            result["bundleId"] = context.packageName
-            result["signingCertSha256"] = signingCertificate(context)
-        }
+        Build.MANUFACTURER?.takeIf { it.isNotBlank() }?.let { result["deviceBrand"] = it }
+        architecture(Build.SUPPORTED_ABIS?.firstOrNull())?.let { result["architecture"] = it }
+        appName(context)?.let { result["appName"] = it }
+        if (includeIdentity) result["signingCertSha256"] = signingCertificate(context)
         return result
+    }
+
+    private fun appName(context: Context): String? = try {
+        context.packageManager.getApplicationLabel(context.applicationInfo).toString().takeIf { it.isNotBlank() }
+    } catch (_: Exception) { null }
+
+    @Suppress("DEPRECATION")
+    private fun installer(context: Context): String? = try {
+        if (Build.VERSION.SDK_INT >= 30) context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName
+        else context.packageManager.getInstallerPackageName(context.packageName)
+    } catch (_: Exception) { null }
+
+    fun installSource(debuggable: Boolean, installer: String?): String = when {
+        debuggable -> "debug"
+        installer.isNullOrBlank() -> "sideload"
+        installer == "com.android.vending" -> "playstore"
+        installer == "com.sec.android.app.samsungapps" -> "galaxystore"
+        installer == "com.amazon.venezia" -> "amazon"
+        else -> "other"
+    }
+
+    fun isEmulator(fingerprint: String?, hardware: String?, product: String?): Boolean =
+        fingerprint.orEmpty().startsWith("generic") || hardware.orEmpty().lowercase(Locale.ROOT) in setOf("goldfish", "ranchu") ||
+            product.orEmpty().startsWith("sdk")
+
+    fun architecture(abi: String?): String? = when (val value = abi?.lowercase(Locale.ROOT)) {
+        null, "" -> null
+        "arm64-v8a" -> "arm64"
+        "armeabi-v7a", "armeabi" -> "armv7"
+        else -> value
+    }
+
+    /** Decimal with a dot and at most three decimals, without trailing zeros. */
+    fun decimal(value: Float): String =
+        String.format(Locale.ROOT, "%.3f", value).trimEnd('0').trimEnd('.')
+
+    fun connection(wifi: Boolean, cellular: Boolean, ethernet: Boolean): String = when {
+        wifi -> "wifi"
+        cellular -> "cellular"
+        ethernet -> "ethernet"
+        else -> "other"
     }
 
     @Suppress("DEPRECATION")

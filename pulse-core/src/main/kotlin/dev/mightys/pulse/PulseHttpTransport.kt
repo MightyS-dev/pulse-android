@@ -26,7 +26,10 @@ internal object RetryAfter {
 }
 
 /** HttpURLConnection transport with one asynchronous network worker, fixed headers and bounded advice. */
-public class PulseHttpTransport : PulseTransport {
+public class PulseHttpTransport internal constructor(private val connectTimeoutMillis: Int, private val readTimeoutBaseMillis: Int) : PulseTransport {
+    /** Default timeouts: 10 seconds to connect, 10 seconds plus one per 16 KiB to read. */
+    public constructor() : this(10000, 10000)
+
     private val network = Executors.newSingleThreadExecutor { action -> Thread(action, "pulse-http").apply { isDaemon = true } }
 
     override fun send(request: PulseRequest, completion: (PulseResponse) -> Unit): PulseCancellation {
@@ -54,8 +57,8 @@ public class PulseHttpTransport : PulseTransport {
         // left untouched: refusing to send while one is installed would silently disable analytics in those apps.
         http.instanceFollowRedirects = false
         http.useCaches = false; http.doOutput = true; http.requestMethod = "POST"
-        http.connectTimeout = 10000
-        http.readTimeout = minOf(90000, 10000 + request.body.size / 16384 * 1000)
+        http.connectTimeout = connectTimeoutMillis
+        http.readTimeout = minOf(90000, readTimeoutBaseMillis + request.body.size / 16384 * 1000)
         http.setFixedLengthStreamingMode(request.body.size)
         http.setRequestProperty("X-App-Key", request.appKey)
         http.setRequestProperty("Content-Type", "application/json")

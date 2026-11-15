@@ -15,9 +15,9 @@ internal class ActivityCounter(private val background: () -> Unit) {
     }
 }
 
-internal class PulseLifecycle(client: PulseClient) : Application.ActivityLifecycleCallbacks {
+internal class PulseLifecycle(client: PulseClient, private val foreground: () -> Unit = {}) : Application.ActivityLifecycleCallbacks {
     private val counter = ActivityCounter { client.background() }
-    override fun onActivityStarted(activity: Activity) { counter.started() }
+    override fun onActivityStarted(activity: Activity) { counter.started(); foreground() }
     override fun onActivityStopped(activity: Activity) { counter.stopped(activity.isChangingConfigurations) }
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) = Unit
     override fun onActivityResumed(activity: Activity) = Unit

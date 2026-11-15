@@ -16,6 +16,8 @@ public interface PulseScheduler {
 }
 /** Environmental metadata seam. Called only by the state worker. */
 public fun interface PulseEnvironment { /** Return system fields without stable device identifiers. */ public fun system(): Map<String, String> }
+/** Values that change while the app runs. Called by the state worker for every signal, so it must return cached state quickly. */
+public fun interface PulseDynamicValues { /** Return the current values; unknown values are left out. */ public fun values(): Map<String, String> }
 /** Randomness seam for bounded retry jitter. */
 public fun interface PulseRandom { /** A sample in the inclusive unit interval; invalid samples are replaced safely. */ public fun sample(): Double }
 /** Fixed diagnostic seam; SDK messages never contain event contents or raw users. */

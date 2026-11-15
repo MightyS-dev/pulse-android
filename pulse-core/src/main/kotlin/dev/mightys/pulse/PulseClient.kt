@@ -3,6 +3,7 @@ package dev.mightys.pulse
 import java.net.URI
 import java.security.SecureRandom
 import java.util.Locale
+import java.util.TimeZone
 import java.util.UUID
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -45,8 +46,16 @@ public class PulseClient @JvmOverloads constructor(
     private var active: PulseCancellation? = null
     private var activeId: String? = null
     private var timer: PulseCancellation? = null
+    private var watchdog: PulseCancellation? = null
     private var pumpQueued = false
     private var installHash: String? = null
+    private var installCreated = false
+    internal var automaticSignals = true
+    private var dynamic = PulseDynamicValues { emptyMap() }
+    private var usage: UsageStats? = null
+    private var usageUnreadable = false
+    private var sessionFields = emptyMap<String, String>()
+    private var newInstallSession = false
     private data class Waiter(val token: String, var target: Set<String>?, val completion: Runnable)
     private val waiters = mutableListOf<Waiter>()
 
@@ -58,6 +67,7 @@ public class PulseClient @JvmOverloads constructor(
             enqueue {
                 if (requestedRevision != revision.get()) return@enqueue
                 capture.reset(); early.clear(); queue.clear(); cancelActive(); installHash = null
+                usage = null; usageUnreadable = false; sessionFields = emptyMap(); newInstallSession = false; installCreated = false
                 desiredPreference = value; preferenceRevision = requestedRevision
                 generation = UUID.randomUUID().toString()
                 persistPreference(); completeWaiters(); requestPump()
@@ -67,7 +77,8 @@ public class PulseClient @JvmOverloads constructor(
     /** Initialize once. Invalid keys/hosts are ignored; no IO occurs on the calling thread. */
     @JvmOverloads
     public fun initialize(key: String?, requested: PulseOptions? = null, storage: PulseStorage,
-        environment: PulseEnvironment, defaultDebug: Boolean = false) {
+        environment: PulseEnvironment, defaultDebug: Boolean = false,
+        dynamicValues: PulseDynamicValues = PulseDynamicValues { emptyMap() }) {
         enqueue {
             if (appKey != null || stopped || key.isNullOrBlank() || key.any { it.code < 32 || it.code == 127 }) return@enqueue
             val normalized = (requested ?: PulseOptions()).normalized()
@@ -76,8 +87,9 @@ public class PulseClient @JvmOverloads constructor(
             appKey = key; endpoint = address; queueName = "queue-" + Hash.hex(key) + ".bin"
             queue = DurableQueue(options)
             interval = options.flushIntervalSeconds; nextFlush = clock.nowMillis() // first batch leaves at once; later ones follow the interval
-            system = environment.system().filterKeys { it in SYSTEM_KEYS || options.sendAppIdentity && it in IDENTITY_KEYS }
-                .mapValues { boundedString(it.value) }.toMutableMap().apply {
+            dynamic = dynamicValues
+            system = environment.system().filterKeys { it in SystemKeys.BASE || options.sendAppIdentity && it in SystemKeys.IDENTITY || it in SystemKeys.EXTRA }
+                .mapValues { if (it.key in SystemKeys.EXTRA) boundedExtra(it.value) else boundedString(it.value) }.toMutableMap().apply {
                     put("sdkName", PulseInfo.SDK_NAME); put("sdkVersion", PulseInfo.VERSION)
                     options.appVersion?.let { put("appVersion", boundedString(it)) }
                 }
@@ -96,7 +108,7 @@ public class PulseClient @JvmOverloads constructor(
             if (privacy.get() == 2 || stopped || capturedRevision != revision.get()) return@enqueue
             if (copied.dropped) warn("Unsupported or oversized properties ignored.")
             val sanitized = SignalJson.sanitize(copied.values) { warn("Unsupported or oversized properties ignored.") }
-            val input = capture.capture(at, type, value, sanitized)
+            val input = capture.capture(at, type, value, sanitized, localFields(at), if (appKey != null) extraFields() else null)
             if (appKey == null) {
                 if (early.size == 100) early.removeFirst()
                 early.addLast(input)
@@ -137,7 +149,7 @@ public class PulseClient @JvmOverloads constructor(
     }
 
     /** Best-effort background save and flush. Never waits for network. */
-    public fun background() { enqueue { if (!stopped) { forced = true; pump() } } }
+    public fun background() { enqueue { if (!stopped) { touchUsage(); forced = true; pump() } } }
 
     /** Bounded local save for background workers. The UI adapter calls the nonblocking variant. */
     @JvmOverloads
@@ -152,7 +164,7 @@ public class PulseClient @JvmOverloads constructor(
         val done = CountDownLatch(1)
         enqueue {
             try {
-                if (stop) { stopped = true; timer?.cancel(); timer = null; cancelActive(); if (load()) persist(); finishAllWaiters() }
+                if (stop) { touchUsage(); stopped = true; timer?.cancel(); timer = null; cancelActive(); if (load()) persist(); finishAllWaiters() }
                 else { forced = true; pump() }
             } finally { done.countDown() }
         }
@@ -184,6 +196,7 @@ public class PulseClient @JvmOverloads constructor(
             store.replace("privacy-generation", generation.toByteArray(Charsets.UTF_8))
             queueName?.let(store::remove)
             store.remove(INSTALL_ID)
+            store.remove(USAGE)
             if (!desired) store.replace("opt-out", byteArrayOf(0))
             desiredPreference = null
             synchronized(privacyLock) { if (preferenceRevision == revision.get()) privacy.set(if (desired) 2 else 1) }
@@ -195,12 +208,81 @@ public class PulseClient @JvmOverloads constructor(
     }
 
     private fun append(input: Input) {
+        if (input.newSession) startSession(input)
+        store(input)
+    }
+
+    private fun store(input: Input) {
         val hashed = if (input.userHash != null) input else input.copy(userHash = installHash())
-        val json = SignalJson.encode(hashed, system, options.debug == true) ?: return
+        val json = SignalJson.encode(hashed, systemFor(input), options.debug == true) ?: return
         queue.entries.add(Entry(UUID.randomUUID().toString(), input.timestamp, json))
     }
 
-    /** SHA-256 of the anonymous install id. Falls back to an in-memory id when storage fails, without retrying. */
+    private fun systemFor(input: Input): Map<String, String> {
+        val merged = LinkedHashMap(system)
+        merged.putAll(sessionFields)
+        merged.putAll(input.local)
+        merged.putAll(input.extra ?: extraFields())
+        if (input.sessionStart > 0 && input.timestamp >= input.sessionStart) {
+            merged["sessionSeconds"] = ((input.timestamp - input.sessionStart) / 1000).toString()
+        }
+        if (newInstallSession) merged["isNewInstall"] = "true"
+        return merged
+    }
+
+    /** Time zone values, read when the signal is captured. */
+    private fun localFields(at: Long): Map<String, String> {
+        val zone = TimeZone.getDefault()
+        return mapOf("timeZone" to boundedExtra(zone.id), "utcOffsetMinutes" to (zone.getOffset(at) / 60000).toString())
+    }
+
+    /** Platform values that can change while the app runs, from cached state. */
+    private fun extraFields(): Map<String, String> = try {
+        dynamic.values().filterKeys { it in SystemKeys.EXTRA }.mapValues { boundedExtra(it.value) }.filterValues { it.isNotEmpty() }
+    } catch (_: Exception) { emptyMap() }
+
+    private fun startSession(input: Input) {
+        installHash()
+        val created = installCreated; installCreated = false
+        val current = usage ?: loadUsage()
+        val offset = TimeZone.getDefault().getOffset(input.timestamp).toLong()
+        val started = current.startSession(input.timestamp, offset, input.previousStart, input.previousEnd,
+            system["appVersion"] ?: "", system["appBuildNumber"] ?: "")
+        usage = started.usage; sessionFields = started.fields; newInstallSession = created
+        persistUsage()
+        if (!automaticSignals) return
+        if (created) store(input.copy(type = "pulse.new_install", value = null, props = emptyMap(), newSession = false))
+        if (started.updated && !created) {
+            val props = mapOf<String, Any?>("previousVersion" to (started.previousVersion ?: ""), "previousBuild" to (started.previousBuild ?: ""))
+            store(input.copy(type = "pulse.app_updated", value = null, props = props, newSession = false))
+        }
+        store(input.copy(type = "pulse.session_started", value = null, props = emptyMap(), newSession = false))
+    }
+
+    private fun loadUsage(): UsageStats {
+        val store = storage
+        var loaded: UsageStats? = null
+        if (store != null) {
+            try { loaded = store.read(USAGE)?.let(UsageStats::decode) } catch (_: Exception) { usageUnreadable = true }
+        }
+        return (loaded ?: UsageStats.fresh()).also { usage = it }
+    }
+
+    private fun persistUsage() {
+        val store = storage ?: return
+        val current = usage ?: return
+        if (usageUnreadable) return
+        try { store.replace(USAGE, current.encode()) } catch (_: Exception) { warn("Usage statistics not saved.") }
+    }
+
+    private fun touchUsage() {
+        val current = usage ?: return
+        if (current.openStart != capture.sessionStart) return
+        val next = current.touched(capture.lastSeen)
+        if (next !== current) { usage = next; persistUsage() }
+    }
+
+        /** SHA-256 of the anonymous install id. Falls back to an in-memory id when storage fails, without retrying. */
     private fun installHash(): String {
         installHash?.let { return it }
         var id: String? = null
@@ -214,7 +296,8 @@ public class PulseClient @JvmOverloads constructor(
             val bytes = ByteArray(16).also { SecureRandom().nextBytes(it) }
             id = bytes.joinToString("") { "%02x".format(Locale.ROOT, it.toInt() and 255) }
             if (store != null && readable) {
-                try { store.replace(INSTALL_ID, id.toByteArray(Charsets.UTF_8)) } catch (_: Exception) { warn("Install id not saved.") }
+                try { store.replace(INSTALL_ID, id.toByteArray(Charsets.UTF_8)); installCreated = true }
+                catch (_: Exception) { warn("Install id not saved.") }
             }
         }
         return Hash.hex(id).also { installHash = it }
@@ -254,7 +337,7 @@ public class PulseClient @JvmOverloads constructor(
     }
 
     private fun prune() { if (queue.prune(clock.nowMillis())) cancelActive() }
-    private fun cancelActive() { active?.cancel(); active = null; activeId = null }
+    private fun cancelActive() { active?.cancel(); active = null; activeId = null; watchdog?.cancel(); watchdog = null }
     private fun liveIds(): Set<String> = queue.entries.mapTo(hashSetOf()) { it.id }
     private fun completeWaiters() {
         val live = liveIds()
@@ -297,12 +380,17 @@ public class PulseClient @JvmOverloads constructor(
             active = try {
                 transport.send(PulseRequest(endpoint!!, appKey!!, batch.wire, batch.gzip)) { response -> enqueue { received(response, token) } }
             } catch (_: Exception) { enqueue { received(PulseResponse(0), token) }; null }
+            // A transport that never answers must not stall the queue: treat the request as a network failure and retry.
+            watchdog?.cancel()
+            watchdog = scheduler.schedule(REQUEST_DEADLINE_MILLIS, Runnable {
+                safely { if (activeId == token) { active?.cancel(); received(PulseResponse(0), token) } }
+            })
         }
     }
 
     private fun received(response: PulseResponse, token: String) {
         if (activeId != token || queue.pending.isEmpty() || stopped) return
-        active = null; activeId = null
+        active = null; activeId = null; watchdog?.cancel(); watchdog = null
         if (optOut) { pump(); return }
         val batch = queue.pending[0]; val status = response.status
         when {
@@ -357,10 +445,11 @@ public class PulseClient @JvmOverloads constructor(
 
     private companion object {
         const val INSTALL_ID = "install-id"
+        const val USAGE = "usage"
+        const val REQUEST_DEADLINE_MILLIS = 150_000L
         val INSTALL_ID_FORMAT = Regex("^[0-9a-f]{32}$")
-        val SYSTEM_KEYS = setOf("platform", "osName", "osVersion", "appVersion", "appBuildNumber", "deviceModel", "locale")
-        val IDENTITY_KEYS = setOf("bundleId", "signingCertSha256")
         fun millis(seconds: Double): Long = (seconds * 1000).toLong()
+        fun boundedExtra(value: String): String = boundedString(value).take(SystemKeys.MAX_EXTRA_LENGTH)
         fun boundedString(value: String): String {
             if (!JsonWriter.validUnicode(value)) return ""
             var result = value.take(256)

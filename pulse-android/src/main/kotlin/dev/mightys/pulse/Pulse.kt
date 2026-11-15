@@ -1,5 +1,6 @@
 package dev.mightys.pulse
 
+import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
 import android.content.pm.ApplicationInfo
@@ -12,6 +13,8 @@ public object Pulse {
     private val scheduler = PulseSerialScheduler()
     private val client = PulseClient(scheduler = scheduler, logger = PulseLogger { Log.w("MightySPulse", it) })
     private var lifecycle: PulseLifecycle? = null
+    @SuppressLint("StaticFieldLeak") // holds the application context only
+    private var state: AndroidState? = null
 
     /** Initialize once with an application context and ingest key. Context lookup and all IO run off-main. */
     @JvmStatic
@@ -24,10 +27,11 @@ public object Pulse {
                     val applicationContext = context.applicationContext ?: context
                     val configured = options ?: PulseOptions()
                     val debug = applicationContext.applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE != 0
+                    val state = this.state ?: AndroidState(applicationContext) { scheduler.execute(it) }.also { this.state = it; it.start() }
                     client.initialize(appKey, configured, PulseFileStorage(File(applicationContext.noBackupFilesDir, "mightys-pulse")),
-                        PulseEnvironment { AndroidMetadata.system(applicationContext, configured.sendAppIdentity) }, debug)
+                        PulseEnvironment { AndroidMetadata.system(applicationContext, configured.sendAppIdentity) }, debug, state)
                     if (lifecycle == null && applicationContext is Application) {
-                        val callbacks = PulseLifecycle(client)
+                        val callbacks = PulseLifecycle(client) { scheduler.execute(Runnable { state.refresh() }) }
                         applicationContext.registerActivityLifecycleCallbacks(callbacks)
                         lifecycle = callbacks
                     }

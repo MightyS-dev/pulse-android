@@ -20,7 +20,7 @@ class WorkerTest {
         server.start()
         val root = Files.createTempDirectory("pulse-hung-http").toFile()
         val scheduler = PulseSerialScheduler(); val transport = PulseHttpTransport()
-        val client = PulseClient(scheduler = scheduler, transport = transport)
+        val client = PulseClient(scheduler = scheduler, transport = transport).also { it.automaticSignals = false }
         try {
             client.initialize("key", PulseOptions(host = "http://127.0.0.1:${server.address.port}"), PulseFileStorage(root), PulseEnvironment { emptyMap() })
             client.track("in.flight"); client.flush()
@@ -43,7 +43,7 @@ class WorkerTest {
         val scheduler = PulseSerialScheduler()
         val transport = FakeTransport()
         val storage = FakeStorage()
-        val client = PulseClient(scheduler = scheduler, transport = transport)
+        val client = PulseClient(scheduler = scheduler, transport = transport).also { it.automaticSignals = false }
         val producers = java.util.concurrent.Executors.newFixedThreadPool(10)
         try {
             client.initialize("key", PulseOptions(maxQueueSize = 10000, maxBatchSize = 1000, gzip = false), storage, PulseEnvironment { emptyMap() })
@@ -61,7 +61,7 @@ class WorkerTest {
     @Test fun timingOutOrCancellingFlushDoesNotDropTheQueue() {
         val scheduler = PulseSerialScheduler()
         val transport = PulseTransport { _, _ -> PulseCancellation {} }
-        val storage = FakeStorage(); val client = PulseClient(scheduler = scheduler, transport = transport)
+        val storage = FakeStorage(); val client = PulseClient(scheduler = scheduler, transport = transport).also { it.automaticSignals = false }
         try {
             client.initialize("key", null, storage, PulseEnvironment { emptyMap() })
             client.track("offline")
