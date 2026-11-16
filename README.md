@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.4")
+    implementation("dev.mightys:pulse-android:0.9.5")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.4"
+    implementation "dev.mightys:pulse-android:0.9.5"
 }
 ```
 
@@ -178,6 +178,7 @@ deletes the saved settings with the rest of the SDK's data.
 - Network errors and server errors (408, 425, 429, 5xx) are retried with exponential backoff from 1 second to 5 minutes.
   `Retry-After` is honoured up to one hour. When the server asks for a pause or a different interval, the SDK follows it.
   A 401 keeps the queue and stops sending until the process restarts.
+- Each batch carries an id, so a batch sent again after a lost answer is stored only once.
 - Delivery is at least once: after a crash a batch can be sent again. If Android ends the process abruptly, the last
   signals may be lost.
 - `Pulse.flush()` is nonblocking. `Pulse.flush(callback)` calls back on the SDK worker when the queue has drained, on

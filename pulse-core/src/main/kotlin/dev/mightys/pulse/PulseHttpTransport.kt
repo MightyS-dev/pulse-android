@@ -69,6 +69,7 @@ public class PulseHttpTransport internal constructor(private val connectTimeoutM
             http.setFixedLengthStreamingMode(request.body.size)
             http.setRequestProperty("Content-Type", "application/json")
             if (request.gzip) http.setRequestProperty("Content-Encoding", "gzip")
+            request.batchId?.let { http.setRequestProperty("X-Pulse-Batch", it) }
             http.outputStream.use { it.write(request.body) }
         }
         val status = http.responseCode

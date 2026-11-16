@@ -30,6 +30,7 @@ public class PulseRequest @JvmOverloads constructor(
     /** Whether Content-Encoding must be gzip. */ public val gzip: Boolean,
     /** True for the settings read: a body-less GET. */ public val isGet: Boolean = false,
     /** Entity tag to send as If-None-Match on a GET, when known. */ public val ifNoneMatch: String? = null,
+    /** Stable id of this batch, sent as X-Pulse-Batch on every retry of the same batch. */ public val batchId: String? = null,
 )
 /** Bounded HTTP response. Zero status indicates a network failure. */
 public class PulseResponse @JvmOverloads constructor(

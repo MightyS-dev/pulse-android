@@ -29,21 +29,29 @@ internal object Gzip {
 }
 
 internal data class Batch(val ids: List<String>, val json: ByteArray, val wire: ByteArray, val gzip: Boolean,
-    val failures: Int = 0, val retryAt: Long = 0)
+    val failures: Int = 0, val retryAt: Long = 0, val batchId: String = BatchId.create())
+
+/** A batch id is 16 random bytes as 32 lowercase hex characters. */
+internal object BatchId {
+    private val FORMAT = Regex("[0-9a-f]{32}")
+    private val random = java.security.SecureRandom()
+    fun create(): String = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(java.util.Locale.ROOT, it.toInt() and 255) }
+    fun valid(id: String): Boolean = FORMAT.matches(id)
+}
 
 internal data class Snapshot(val generation: String, val entries: List<Entry>, val pending: List<Batch>,
     val interval: Double, val pauseUntil: Long) {
     fun encode(): ByteArray {
         val output = ByteArrayOutputStream()
         DataOutputStream(output).use { data ->
-            data.writeInt(1); data.writeUTF(generation); data.writeDouble(interval); data.writeLong(pauseUntil)
+            data.writeInt(2); data.writeUTF(generation); data.writeDouble(interval); data.writeLong(pauseUntil)
             data.writeInt(entries.size)
             entries.forEach { data.writeUTF(it.id); data.writeLong(it.timestamp); data.blob(it.json) }
             data.writeInt(pending.size)
             pending.forEach { batch ->
                 data.writeInt(batch.ids.size); batch.ids.forEach(data::writeUTF)
                 data.blob(batch.json); data.blob(batch.wire); data.writeBoolean(batch.gzip)
-                data.writeInt(batch.failures); data.writeLong(batch.retryAt)
+                data.writeInt(batch.failures); data.writeLong(batch.retryAt); data.writeUTF(batch.batchId)
             }
         }
         val payload = output.toByteArray()
@@ -66,7 +74,8 @@ internal data class Snapshot(val generation: String, val entries: List<Entry>, v
             val payload = bytes.copyOfRange(36, bytes.size)
             require(Hash.bytes(payload).contentEquals(bytes.copyOfRange(4, 36)))
             DataInputStream(ByteArrayInputStream(payload)).use { input ->
-                require(input.readInt() == 1)
+                val version = input.readInt()
+                require(version == 1 || version == 2)
                 val generation = input.readUTF()
                 require(generation.isEmpty() || UUID.fromString(generation).toString() == generation)
                 val interval = input.readDouble(); val pauseUntil = input.readLong()
@@ -74,7 +83,8 @@ internal data class Snapshot(val generation: String, val entries: List<Entry>, v
                 val entries = List(input.count(10000)) { Entry(input.readUTF(), input.readLong(), input.blob()) }
                 val pending = List(input.count(1000)) {
                     Batch(List(input.count(1000)) { input.readUTF() }, input.blob(), input.blob(),
-                        input.readBoolean(), input.readInt(), input.readLong())
+                        input.readBoolean(), input.readInt(), input.readLong(),
+                        if (version == 2) input.readUTF().also { id -> require(BatchId.valid(id)) } else BatchId.create())
                 }
                 require(input.available() == 0)
                 Snapshot(generation, entries, pending, interval, pauseUntil).also { it.validate() }
@@ -92,7 +102,7 @@ internal data class Snapshot(val generation: String, val entries: List<Entry>, v
         }
         val seen = hashSetOf<String>()
         for (batch in pending) {
-            require(batch.ids.isNotEmpty() && batch.failures in 0..1000000)
+            require(batch.ids.isNotEmpty() && batch.failures in 0..1000000 && BatchId.valid(batch.batchId))
             val members = batch.ids.map { id -> require(seen.add(id)); requireNotNull(byId[id]) }
             require(SignalJson.batch(members).contentEquals(batch.json))
             require(batch.json.size <= SignalJson.MAX_BODY && batch.wire.size <= SignalJson.MAX_BODY)

@@ -493,7 +493,7 @@ public class PulseClient @JvmOverloads constructor(
             val token = UUID.randomUUID().toString(); val batch = queue.pending[0]
             activeId = token
             active = try {
-                transport.send(PulseRequest(endpoint!!, appKey!!, batch.wire, batch.gzip)) { response -> enqueue { received(response, token) } }
+                transport.send(PulseRequest(endpoint!!, appKey!!, batch.wire, batch.gzip, batchId = batch.batchId)) { response -> enqueue { received(response, token) } }
             } catch (_: Exception) { enqueue { received(PulseResponse(0), token) }; null }
             // A transport that never answers must not stall the queue: treat the request as a network failure and retry.
             watchdog?.cancel()

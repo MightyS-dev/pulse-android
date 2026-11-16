@@ -3,7 +3,7 @@ kotlin = "2.2.20"
 agp = "8.11.1"
 junit = "4.13.2"
 fragment = "1.8.5"
-pulse = "0.9.4"
+pulse = "0.9.5"
 [libraries]
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }

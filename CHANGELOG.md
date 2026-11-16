@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.5] - 2026-11-16
+
+- A batch that is sent again after a lost answer is stored only once.
+
 ## [0.9.4] - 2026-11-16
 
 - Signals captured in the same millisecond keep their order: timestamps are strictly increasing.
