@@ -1,1 +1,2 @@
-# No reflection or JNI is used; no consumer keep rules are required.
+# androidx.fragment is optional and read only after a runtime class check.
+-dontwarn androidx.fragment.app.**

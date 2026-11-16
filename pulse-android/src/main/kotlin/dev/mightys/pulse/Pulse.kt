@@ -13,6 +13,8 @@ public object Pulse {
     private val scheduler = PulseSerialScheduler()
     private val client = PulseClient(scheduler = scheduler, logger = PulseLogger { Log.w("MightySPulse", it) })
     private var lifecycle: PulseLifecycle? = null
+    private val screens = AutomaticScreens(client)
+    private var screensRegistered = false
     @SuppressLint("StaticFieldLeak") // holds the application context only
     private var state: AndroidState? = null
 
@@ -38,6 +40,15 @@ public object Pulse {
                 }
             })
         }
+        safely { registerScreenHooks(context) }
+    }
+
+    /** Hooks go in right away, on the calling thread, so the launcher Activity's resume is not missed. */
+    @Synchronized
+    private fun registerScreenHooks(context: Context) {
+        val application = (context.applicationContext ?: context) as? Application ?: return
+        if (!screensRegistered) { application.registerActivityLifecycleCallbacks(screens.callbacks); screensRegistered = true }
+        screens.initializedFrom(context)
     }
 
     /** Capture a named event with optional finite numeric value and primitive properties. Invalid inputs are ignored. */
@@ -46,6 +57,13 @@ public object Pulse {
     public fun track(type: String?, value: Double? = null, props: Map<String, *>? = null) {
         safely { client.track(type, value, props) }
     }
+
+    /**
+     * Record a screen view by hand (same `pulse.screen_view` signal as the automatic capture; useful for Compose
+     * destinations or custom navigation). The same screen again without another in between sends nothing.
+     */
+    @JvmStatic
+    public fun screen(name: String?) { safely { client.screen(name) } }
 
     /** Hash a caller-selected user ID on-device; null or empty clears it for future signals. */
     @JvmStatic

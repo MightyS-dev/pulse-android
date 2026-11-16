@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.3")
+    implementation("dev.mightys:pulse-android:0.9.4")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.3"
+    implementation "dev.mightys:pulse-android:0.9.4"
 }
 ```
 
@@ -105,6 +105,27 @@ connection address, uses it only to derive a two-letter country code and does no
 
 Do not put personal data in event names, properties or the app version override.
 
+## Screen views
+
+The SDK sends `pulse.screen_view` by itself, with no code from you. It records the simple class name of each Activity
+when it is resumed, and the class name of each visible AndroidX fragment when your app uses `androidx.fragment` (apps
+without it are unaffected). Props: `screen` (at most 128 characters) and `previousScreen` when there is one. Showing the
+same screen again with no other screen in between sends nothing. Never sent: titles, text on the screen, anything the
+user typed, intent extras or URLs.
+
+For Compose destinations or your own navigation, record a screen by hand (Java: `Pulse.screen("Settings");`):
+
+```kotlin
+Pulse.screen("Settings")
+```
+
+A name with a query or fragment loses them, and number or uuid-like path segments become `:id`. Manual calls respect
+opt-out like any signal. To switch off the automatic capture (the hooks stay quiet and send nothing):
+
+```kotlin
+Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(automaticScreenViews = false))
+```
+
 ## Options
 
 ```kotlin
@@ -128,10 +149,25 @@ Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(
 | `debug` | follows the build, see Test mode | Marks signals as test data and logs short diagnostics to Logcat, never signal contents. |
 | `sendAppIdentity` | false | Adds the first signing certificate SHA-256 (the package name is always sent as `bundleId`). |
 | `appVersion` | package version name | Overrides the app version. |
+| `automaticScreenViews` | true | Sends `pulse.screen_view` when an Activity or AndroidX fragment is shown. False sends no automatic screen views. |
+| `automaticSignals` | true | Sends `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. False sends none of them. |
 
 **Test mode.** Every signal carries a test flag. By default it follows the build: debuggable builds (what Android Studio
 runs) send test signals, release builds send real ones, with the same app key. Set `debug = true` or `debug = false` to
 decide yourself. In the dashboard, the test mode switch chooses which of the two you are looking at.
+
+## Settings from the portal
+
+Once per launch, in the background, the SDK reads your app's settings from `<host>/api/v1/config` using your app key and
+keeps them in its own storage. In the portal you can switch off screen views, the automatic signals, individual automatic
+signal types and groups of device fields (device, screen, settings, network, app, usage). A change applies from the next
+launch of the app, never in the middle of a run, and no package update is needed. The package name and the base fields
+(platform, OS, app version, device model, locale) are never removed.
+
+Everything is on when the settings cannot be read (offline, an error, nothing saved yet). A code option can only
+switch things off: `automaticScreenViews = false` or `automaticSignals = false` turn them off whatever the portal says,
+while true (the default) follows the portal and never turns on what the portal switched off. Opting out
+deletes the saved settings with the rest of the SDK's data.
 
 ## Delivery and offline behaviour
 

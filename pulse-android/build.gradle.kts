@@ -7,6 +7,7 @@ android {
     compileOptions { sourceCompatibility = JavaVersion.VERSION_11; targetCompatibility = JavaVersion.VERSION_11 }
     publishing { singleVariant("release") { withSourcesJar() } }
     lint { abortOnError = true; warningsAsErrors = true }
+    testOptions { unitTests.isReturnDefaultValues = true }
 }
 val licenseResources by tasks.registering(Copy::class) {
     from(rootProject.file("LICENSE.md")) { rename { "LICENSE-pulse-android.md" } }
@@ -21,6 +22,7 @@ kotlin {
 dependencies {
     api(libs.kotlin.stdlib) { exclude(group = "org.jetbrains", module = "annotations") }
     api(project(":pulse-core"))
+    compileOnly(libs.androidx.fragment)
     testImplementation(libs.junit)
 }
 apply(from = rootProject.file("gradle/publish.gradle.kts"))

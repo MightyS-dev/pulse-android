@@ -14,7 +14,9 @@ internal object Hash {
 internal data class Input(val timestamp: Long, val session: String, val userHash: String?, val type: String?,
     val value: Double?, val props: Map<String, Any?>, val newSession: Boolean = false, val sessionStart: Long = 0,
     val previousStart: Long = 0, val previousEnd: Long = 0, val local: Map<String, String> = emptyMap(),
-    val extra: Map<String, String>? = null)
+    val extra: Map<String, String>? = null,
+    /** 0 for an ordinary signal, 1 for a screen view called by hand, 2 for one reported by an automatic hook. Judged when stored. */
+    val screen: Int = 0)
 
 internal object JsonWriter {
     fun validUnicode(value: String): Boolean {

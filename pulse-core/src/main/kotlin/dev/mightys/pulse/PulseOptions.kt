@@ -20,6 +20,10 @@ public data class PulseOptions @JvmOverloads constructor(
     public val sendAppIdentity: Boolean = false,
     /** Optional application version override. */
     public val appVersion: String? = null,
+    /** Send `pulse.screen_view` automatically when an Activity (or AndroidX fragment) is shown. Set false to send no automatic screen views. Manual `screen()` calls still send. The portal can switch screen views off, never on. */
+    public val automaticScreenViews: Boolean = true,
+    /** Send `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. Set false to send none of them. The portal can switch them off, never on. */
+    public val automaticSignals: Boolean = true,
 ) {
     internal fun normalized(): PulseOptions = copy(
         host = host ?: PulseInfo.DEFAULT_HOST,

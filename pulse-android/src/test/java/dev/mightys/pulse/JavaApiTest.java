@@ -17,4 +17,11 @@ public class JavaApiTest {
         assertFalse(Pulse.flush(0L));
         assertTrue(Pulse.getOptOut());
     }
+
+    @Test public void optionsStaySourceCompatibleForJava() {
+        PulseOptions plain = new PulseOptions("https://in.mightys.dev");
+        assertTrue(plain.getAutomaticScreenViews()); assertTrue(plain.getAutomaticSignals());
+        PulseOptions off = new PulseOptions("https://in.mightys.dev", 20.0, 100, 1000, 7.0, true, null, false, null, false, false);
+        assertFalse(off.getAutomaticScreenViews()); assertFalse(off.getAutomaticSignals());
+    }
 }

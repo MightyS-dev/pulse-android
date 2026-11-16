@@ -50,8 +50,18 @@ class FakeTransport : PulseTransport {
     val requests = mutableListOf<PulseRequest>()
     val replies = ArrayDeque<PulseResponse>()
     val cancellations = mutableListOf<FakeCancellation>()
+    /** Settings reads (GET) are kept apart so delivery counts and handlers only see signal batches. */
+    val configRequests = mutableListOf<PulseRequest>()
+    val configReplies = ArrayDeque<PulseResponse>()
+    var configHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null
     var handler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null
     override fun send(request: PulseRequest, completion: (PulseResponse) -> Unit): PulseCancellation {
+        if (request.isGet) {
+            configRequests.add(request)
+            val reading = FakeCancellation()
+            configHandler?.invoke(request, completion) ?: completion(configReplies.poll() ?: PulseResponse(404))
+            return reading
+        }
         requests.add(request)
         val cancellation = FakeCancellation(); cancellations.add(cancellation)
         handler?.invoke(request, completion) ?: completion(replies.poll() ?: PulseResponse(202))
@@ -62,11 +72,12 @@ class Harness(val options: PulseOptions = PulseOptions(), val storage: PulseStor
     val clock: FakeClock = FakeClock(), initialize: Boolean = true, key: String = "synthetic-key",
     random: PulseRandom = PulseRandom { 0.5 }, logger: PulseLogger = PulseLogger {},
     automatic: Boolean = false, val dynamic: PulseDynamicValues = PulseDynamicValues { emptyMap() },
-    val env: Map<String, String> = mapOf("platform" to "mobile", "osName" to "Android")) {
+    val env: Map<String, String> = mapOf("platform" to "mobile", "osName" to "Android"),
+    configReplies: List<PulseResponse> = emptyList(), configHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null) {
     val scheduler = FakeScheduler(clock)
     val transport = FakeTransport()
     val client = PulseClient(clock, scheduler, transport, random, logger).also { it.automaticSignals = automatic }
-    init { if (initialize) initialize(key) }
+    init { transport.configReplies.addAll(configReplies); transport.configHandler = configHandler; if (initialize) initialize(key) }
     fun initialize(key: String = "synthetic-key") {
         client.initialize(key, options, storage, PulseEnvironment { env }, false, dynamic)
         settle()

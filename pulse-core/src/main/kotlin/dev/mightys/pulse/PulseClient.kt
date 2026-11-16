@@ -50,12 +50,25 @@ public class PulseClient @JvmOverloads constructor(
     private var pumpQueued = false
     private var installHash: String? = null
     private var installCreated = false
+    /** Test switch that turns the three automatic session signals off whatever the options and the portal say. */
     internal var automaticSignals = true
+    @Volatile private var settings = RemoteSettings()
+    private var configToken: String? = null
+    private var configRequest: PulseCancellation? = null
+    private var configWatchdog: PulseCancellation? = null
+
+    /**
+     * Whether automatic screen hooks should be installed: the code option is not false and the settings saved from an
+     * earlier launch allow screen views (on when there are none). Settled by [initialize]. Read it from the SDK worker after initialize has run.
+     */
+    @Volatile public var screenViewHooksEnabled: Boolean = true
+        private set
     private var dynamic = PulseDynamicValues { emptyMap() }
     private var usage: UsageStats? = null
     private var usageUnreadable = false
     private var sessionFields = emptyMap<String, String>()
     private var newInstallSession = false
+    private var lastScreen: String? = null
     private data class Waiter(val token: String, var target: Set<String>?, val completion: Runnable)
     private val waiters = mutableListOf<Waiter>()
 
@@ -66,8 +79,9 @@ public class PulseClient @JvmOverloads constructor(
             val requestedRevision = synchronized(privacyLock) { privacy.set(2); revision.incrementAndGet() }
             enqueue {
                 if (requestedRevision != revision.get()) return@enqueue
-                capture.reset(); early.clear(); queue.clear(); cancelActive(); installHash = null
+                capture.reset(); early.clear(); queue.clear(); cancelActive(); cancelConfig(); installHash = null
                 usage = null; usageUnreadable = false; sessionFields = emptyMap(); newInstallSession = false; installCreated = false
+                lastScreen = null
                 desiredPreference = value; preferenceRevision = requestedRevision
                 generation = UUID.randomUUID().toString()
                 persistPreference(); completeWaiters(); requestPump()
@@ -93,7 +107,7 @@ public class PulseClient @JvmOverloads constructor(
                     put("sdkName", PulseInfo.SDK_NAME); put("sdkVersion", PulseInfo.VERSION)
                     options.appVersion?.let { put("appVersion", boundedString(it)) }
                 }
-            readPrivacy(); requestPump()
+            readPrivacy(); applyCachedSettings(); requestPump(); fetchSettings()
         }
     }
 
@@ -104,16 +118,53 @@ public class PulseClient @JvmOverloads constructor(
         val at = clock.nowMillis()
         val capturedRevision = revision.get()
         val copied = try { copyProps(props) } catch (_: Exception) { PropertyCopy(emptyMap(), true) }
+        enqueue { capture(at, type, value, copied, capturedRevision) }
+    }
+
+    private fun capture(at: Long, type: String, value: Double?, copied: PropertyCopy, capturedRevision: Long, screenKind: Int = 0) {
+        if (privacy.get() == 2 || stopped || capturedRevision != revision.get()) return
+        if (copied.dropped) warn("Unsupported or oversized properties ignored.")
+        val sanitized = SignalJson.sanitize(copied.values) { warn("Unsupported or oversized properties ignored.") }
+        val input = capture.capture(at, type, value, sanitized, localFields(at), if (appKey != null) extraFields() else null).copy(screen = screenKind)
+        if (appKey == null) {
+            if (early.size == 100) early.removeFirst()
+            early.addLast(input)
+        } else { append(input); requestPump() }
+    }
+
+    /**
+     * Record a screen appearance as `pulse.screen_view` with `screen` and, when known, `previousScreen`.
+     * The name is cleaned (query and fragment removed, numeric and uuid-like path segments become `:id`, at most 128
+     * characters). The same screen appearing again without another screen in between sends nothing.
+     */
+    public fun screen(name: String?) { screen(name, false) }
+
+    /** A screen reported by an automatic hook; dropped when the code option `automaticScreenViews` is false. */
+    public fun automaticScreen(name: String?) { screen(name, true) }
+
+    private fun screen(name: String?, automatic: Boolean) {
+        if (privacy.get() == 2) return
+        val cleaned = ScreenName.clean(name) ?: return
+        val at = clock.nowMillis()
+        val capturedRevision = revision.get()
+        // Captured here, in call order, with its time. Whether it is sent (code option, saved portal settings, same
+        // screen twice) and its previousScreen are judged when it is stored, still in that order.
         enqueue {
-            if (privacy.get() == 2 || stopped || capturedRevision != revision.get()) return@enqueue
-            if (copied.dropped) warn("Unsupported or oversized properties ignored.")
-            val sanitized = SignalJson.sanitize(copied.values) { warn("Unsupported or oversized properties ignored.") }
-            val input = capture.capture(at, type, value, sanitized, localFields(at), if (appKey != null) extraFields() else null)
-            if (appKey == null) {
-                if (early.size == 100) early.removeFirst()
-                early.addLast(input)
-            } else { append(input); requestPump() }
+            capture(at, "pulse.screen_view", null, PropertyCopy(mapOf("screen" to cleaned), false), capturedRevision, if (automatic) 2 else 1)
         }
+    }
+
+    /** Decide a captured screen view when it is stored. Null means it is not sent; a session it opened still starts. */
+    private fun resolveScreen(input: Input): Input? {
+        val name = input.props["screen"] as? String
+        if (name == null || input.screen == 2 && !options.automaticScreenViews || name == lastScreen) {
+            if (input.newSession) startSession(input)
+            return null
+        }
+        val props = linkedMapOf<String, Any?>("screen" to name)
+        lastScreen?.let { props["previousScreen"] = it }
+        lastScreen = name
+        return input.copy(props = props, screen = 0)
     }
 
     /** Hash a caller-selected ID on the worker, or clear it. The raw ID is never persisted or logged. */
@@ -164,7 +215,7 @@ public class PulseClient @JvmOverloads constructor(
         val done = CountDownLatch(1)
         enqueue {
             try {
-                if (stop) { touchUsage(); stopped = true; timer?.cancel(); timer = null; cancelActive(); if (load()) persist(); finishAllWaiters() }
+                if (stop) { touchUsage(); stopped = true; timer?.cancel(); timer = null; cancelActive(); cancelConfig(); if (load()) persist(); finishAllWaiters() }
                 else { forced = true; pump() }
             } finally { done.countDown() }
         }
@@ -197,6 +248,7 @@ public class PulseClient @JvmOverloads constructor(
             queueName?.let(store::remove)
             store.remove(INSTALL_ID)
             store.remove(USAGE)
+            store.remove(RemoteSettings.FILE)
             if (!desired) store.replace("opt-out", byteArrayOf(0))
             desiredPreference = null
             synchronized(privacyLock) { if (preferenceRevision == revision.get()) privacy.set(if (desired) 2 else 1) }
@@ -207,12 +259,21 @@ public class PulseClient @JvmOverloads constructor(
         }
     }
 
-    private fun append(input: Input) {
+    private fun append(captured: Input) {
+        val input = if (captured.screen > 0) resolveScreen(captured) ?: return else captured
         if (input.newSession) startSession(input)
         store(input)
     }
 
-    private fun store(input: Input) {
+    /** Latest capture timestamp handed out in this process, in milliseconds. Touched only on the worker. */
+    private var lastStamp = Long.MIN_VALUE / 2
+
+    private fun store(captured: Input) {
+        if (!signalAllowed(captured.type)) return
+        // Strictly increasing at millisecond resolution, in storing order: automatic signals are stored before the
+        // signal that started the session, so they keep the smaller timestamps.
+        lastStamp = maxOf(captured.timestamp, lastStamp + 1)
+        val input = captured.copy(timestamp = lastStamp)
         val hashed = if (input.userHash != null) input else input.copy(userHash = installHash())
         val json = SignalJson.encode(hashed, systemFor(input), options.debug == true) ?: return
         queue.entries.add(Entry(UUID.randomUUID().toString(), input.timestamp, json))
@@ -227,6 +288,7 @@ public class PulseClient @JvmOverloads constructor(
             merged["sessionSeconds"] = ((input.timestamp - input.sessionStart) / 1000).toString()
         }
         if (newInstallSession) merged["isNewInstall"] = "true"
+        if (settings.hiddenKeys.isNotEmpty()) merged.keys.removeAll(settings.hiddenKeys)
         return merged
     }
 
@@ -248,15 +310,68 @@ public class PulseClient @JvmOverloads constructor(
         val offset = TimeZone.getDefault().getOffset(input.timestamp).toLong()
         val started = current.startSession(input.timestamp, offset, input.previousStart, input.previousEnd,
             system["appVersion"] ?: "", system["appBuildNumber"] ?: "")
-        usage = started.usage; sessionFields = started.fields; newInstallSession = created
+        // The new version is remembered only when pulse.app_updated can actually be queued, so a launch where it is
+        // switched off does not swallow the update: a later launch with it allowed still sends it.
+        val holdVersion = started.updated && !created && !signalAllowed("pulse.app_updated")
+        usage = if (holdVersion) started.usage.copy(version = current.version, build = current.build) else started.usage
+        sessionFields = started.fields; newInstallSession = created
         persistUsage()
-        if (!automaticSignals) return
         if (created) store(input.copy(type = "pulse.new_install", value = null, props = emptyMap(), newSession = false))
         if (started.updated && !created) {
             val props = mapOf<String, Any?>("previousVersion" to (started.previousVersion ?: ""), "previousBuild" to (started.previousBuild ?: ""))
             store(input.copy(type = "pulse.app_updated", value = null, props = props, newSession = false))
         }
         store(input.copy(type = "pulse.session_started", value = null, props = emptyMap(), newSession = false))
+    }
+
+    /** What the portal settings and the code options allow to be sent; a code option can only switch things off. */
+    private fun signalAllowed(type: String?): Boolean {
+        if (type == null) return true
+        if (type == RemoteSettings.SCREEN_VIEW) return portalAllowsScreenViews()
+        if (type in RemoteSettings.AUTOMATIC_TYPES)
+            return automaticSignals && options.automaticSignals && settings.automaticSignals && type !in settings.disabledSignals
+        return true
+    }
+    private fun portalAllowsScreenViews(): Boolean =
+        settings.screenViews && settings.automaticSignals && RemoteSettings.SCREEN_VIEW !in settings.disabledSignals
+
+    /** Use the settings saved by an earlier launch for this whole run. No file or a damaged file means everything on. */
+    private fun applyCachedSettings() {
+        val bytes = try { storage?.read(RemoteSettings.FILE) } catch (_: Exception) { null }
+        settings = bytes?.let(RemoteSettings::parse) ?: RemoteSettings()
+        screenViewHooksEnabled = options.automaticScreenViews && portalAllowsScreenViews()
+    }
+
+    /** Ask the portal for the settings once. The answer is saved for the next launch and never changes this run. */
+    private fun fetchSettings() {
+        val store = storage ?: return
+        val base = endpoint ?: return
+        val key = appKey ?: return
+        if (privacy.get() != 1 || stopped) return
+        val url = try { java.net.URL(base.toString().removeSuffix("signals") + "config") } catch (_: Exception) { return }
+        val tag = settings.version?.let { "\"$it\"" }
+        val token = UUID.randomUUID().toString()
+        configToken = token
+        configRequest = try {
+            transport.send(PulseRequest(url, key, byteArrayOf(), false, true, tag)) { response ->
+                enqueue { settingsReceived(response, token, store) }
+            }
+        } catch (_: Exception) { configToken = null; null }
+        configWatchdog = scheduler.schedule(REQUEST_DEADLINE_MILLIS, Runnable {
+            safely { if (configToken == token) { configRequest?.cancel(); configToken = null; configRequest = null } }
+        })
+    }
+
+    private fun settingsReceived(response: PulseResponse, token: String, store: PulseStorage) {
+        if (configToken != token) return
+        configToken = null; configRequest = null; configWatchdog?.cancel(); configWatchdog = null
+        if (response.status != 200 || stopped || privacy.get() != 1) return
+        if (RemoteSettings.parse(response.body) == null) return
+        try { store.replace(RemoteSettings.FILE, response.body) } catch (_: Exception) { warn("Settings not saved.") }
+    }
+
+    private fun cancelConfig() {
+        configToken = null; configRequest?.cancel(); configRequest = null; configWatchdog?.cancel(); configWatchdog = null
     }
 
     private fun loadUsage(): UsageStats {

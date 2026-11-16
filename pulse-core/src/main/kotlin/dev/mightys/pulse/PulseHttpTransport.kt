@@ -25,12 +25,12 @@ internal object RetryAfter {
     }
 }
 
-/** HttpURLConnection transport with one asynchronous network worker, fixed headers and bounded advice. */
+/** HttpURLConnection transport with asynchronous network workers (a settings read never waits behind a delivery), fixed headers and bounded advice. */
 public class PulseHttpTransport internal constructor(private val connectTimeoutMillis: Int, private val readTimeoutBaseMillis: Int) : PulseTransport {
     /** Default timeouts: 10 seconds to connect, 10 seconds plus one per 16 KiB to read. */
     public constructor() : this(10000, 10000)
 
-    private val network = Executors.newSingleThreadExecutor { action -> Thread(action, "pulse-http").apply { isDaemon = true } }
+    private val network = Executors.newFixedThreadPool(2) { action -> Thread(action, "pulse-http").apply { isDaemon = true } }
 
     override fun send(request: PulseRequest, completion: (PulseResponse) -> Unit): PulseCancellation {
         val cancelled = AtomicBoolean(false)
@@ -56,16 +56,21 @@ public class PulseHttpTransport internal constructor(private val connectTimeoutM
         // The SDK never sets or reads cookies and the ingest server issues none. An app-wide CookieHandler is
         // left untouched: refusing to send while one is installed would silently disable analytics in those apps.
         http.instanceFollowRedirects = false
-        http.useCaches = false; http.doOutput = true; http.requestMethod = "POST"
+        http.useCaches = false; http.doOutput = !request.isGet; http.requestMethod = if (request.isGet) "GET" else "POST"
         http.connectTimeout = connectTimeoutMillis
         http.readTimeout = minOf(90000, readTimeoutBaseMillis + request.body.size / 16384 * 1000)
-        http.setFixedLengthStreamingMode(request.body.size)
         http.setRequestProperty("X-App-Key", request.appKey)
-        http.setRequestProperty("Content-Type", "application/json")
         http.setRequestProperty("User-Agent", PulseInfo.SDK_NAME + "/" + PulseInfo.VERSION)
         http.setRequestProperty("Accept-Encoding", "identity")
-        if (request.gzip) http.setRequestProperty("Content-Encoding", "gzip")
-        http.outputStream.use { it.write(request.body) }
+        if (request.isGet) {
+            request.ifNoneMatch?.let { http.setRequestProperty("If-None-Match", it) }
+            http.setRequestProperty("Accept", "application/json")
+        } else {
+            http.setFixedLengthStreamingMode(request.body.size)
+            http.setRequestProperty("Content-Type", "application/json")
+            if (request.gzip) http.setRequestProperty("Content-Encoding", "gzip")
+            http.outputStream.use { it.write(request.body) }
+        }
         val status = http.responseCode
         val stream = if (status >= 400) http.errorStream else http.inputStream
         val output = ByteArrayOutputStream()

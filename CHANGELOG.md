@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.4] - 2026-11-16
+
+- Signals captured in the same millisecond keep their order: timestamps are strictly increasing.
+- Fixed: the first Activity of a launch now gets its automatic screen view even when `Pulse.initialize` is called from
+  `onCreate` or `onResume`. An app update is no longer forgotten when the automatic signals were switched off on the
+  launch that first saw the new version: the next launch that allows it sends `pulse.app_updated`.
+- Settings from the portal: once per launch the SDK reads your app's settings from the portal and applies them from the
+  next launch, so screen views, automatic signals and groups of device fields can be switched off without an update.
+  Everything stays on by default and whenever the settings cannot be read. The options `automaticScreenViews` and the new
+  `automaticSignals` can switch things off in code; they never turn on what the portal switched off.
+
+- Automatic screen views: `pulse.screen_view` with `screen` (the Activity class name, or the AndroidX fragment class name
+  when your app uses fragments) and `previousScreen`. Turn it off with `PulseOptions(automaticScreenViews = false)`.
+- `Pulse.screen("Name")` records a screen by hand, for Compose destinations or custom navigation.
+
 ## [0.9.3] - 2026-11-15
 
 - Every signal now carries the non-sensitive device, screen, settings, accessibility, app and install details Android can

@@ -23,11 +23,13 @@ public fun interface PulseRandom { /** A sample in the inclusive unit interval; 
 /** Fixed diagnostic seam; SDK messages never contain event contents or raw users. */
 public fun interface PulseLogger { /** Log a fixed diagnostic only when debug is enabled. */ public fun warn(message: String) }
 /** One immutable HTTP request. Body bytes belong to the SDK and must not be modified. */
-public class PulseRequest(
+public class PulseRequest @JvmOverloads constructor(
     /** Validated ingest endpoint. */ public val url: URL,
     /** Application ingest key. */ public val appKey: String,
     /** Exact durable wire body. */ public val body: ByteArray,
     /** Whether Content-Encoding must be gzip. */ public val gzip: Boolean,
+    /** True for the settings read: a body-less GET. */ public val isGet: Boolean = false,
+    /** Entity tag to send as If-None-Match on a GET, when known. */ public val ifNoneMatch: String? = null,
 )
 /** Bounded HTTP response. Zero status indicates a network failure. */
 public class PulseResponse @JvmOverloads constructor(
