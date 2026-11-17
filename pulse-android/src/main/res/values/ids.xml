@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- View tag key for Pulse.heatmapIgnore(view): the view and everything inside it is never part of a heatmap. -->
+    <item name="pulse_heatmap_ignore" type="id" />
+</resources>

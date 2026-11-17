@@ -43,6 +43,22 @@ class HttpTransportTest {
         assertArrayEquals(body, received); assertArrayEquals(json, Gzip.decode(received))
     }
 
+    @Test fun screenshotUploadSendsTheImageContentTypeRawAndTheRetryAfterBack() = withServer { server, transport, base ->
+        val image = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3)
+        val observed = mutableMapOf<String, String>(); var received = byteArrayOf(); var query = ""
+        server.createContext("/api/v1/heatmap/screenshot") { exchange ->
+            listOf("X-App-Key", "Content-Type", "Content-Encoding", "X-Pulse-Batch").forEach { observed[it] = exchange.requestHeaders.getFirst(it) ?: "" }
+            query = exchange.requestURI.rawQuery; received = exchange.requestBody.readBytes()
+            exchange.responseHeaders.add("Retry-After", "30"); exchange.sendResponseHeaders(429, -1); exchange.close()
+        }
+        val done = CountDownLatch(1); var result: PulseResponse? = null
+        transport.send(PulseRequest(URL("$base/api/v1/heatmap/screenshot?screen=A&debug=true"), "synthetic-key", image, false, contentType = "image/png")) { result = it; done.countDown() }
+        assertTrue(done.await(5, TimeUnit.SECONDS))
+        assertEquals(429, result!!.status); assertEquals("30", result!!.retryAfter)
+        assertEquals("image/png", observed["Content-Type"]); assertEquals("", observed["Content-Encoding"]); assertEquals("", observed["X-Pulse-Batch"])
+        assertEquals("synthetic-key", observed["X-App-Key"]); assertEquals("screen=A&debug=true", query); assertArrayEquals(image, received)
+    }
+
     @Test fun appWithGlobalCookieHandlerStillDeliversAndSendsNoForeignCookies() = withServer { server, transport, base ->
         val previous = java.net.CookieHandler.getDefault()
         val manager = java.net.CookieManager(null, java.net.CookiePolicy.ACCEPT_ALL)

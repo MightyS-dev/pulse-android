@@ -25,7 +25,9 @@ public class PulseClient @JvmOverloads constructor(
     private var desiredPreference: Boolean? = null
     private var preferenceRevision = 0L
     private var generation = ""
-    private var storage: PulseStorage? = null
+    @Volatile private var storage: PulseStorage? = null
+    /** Where a crash is written while [storage] is not loaded yet; known as soon as initialize returns. */
+    @Volatile private var crashStorage: PulseStorage? = null
     private var queueName: String? = null
     private var endpoint: java.net.URL? = null
     private var appKey: String? = null
@@ -56,6 +58,17 @@ public class PulseClient @JvmOverloads constructor(
     private var configToken: String? = null
     private var configRequest: PulseCancellation? = null
     private var configWatchdog: PulseCancellation? = null
+    /** Settings of this run's refresh. Only the heatmap rules follow it at once; everything else holds for the run. */
+    private var liveSettings: RemoteSettings? = null
+    private var debugBuild = false
+    private val heatmap = HeatmapCapture(::heatmapAllowed, { capture.sessionAt(it) }, ::emitHeatmap)
+    private val shots = HeatmapShots({ storage }, transport, clock, ::shotTarget, { system["appVersion"] ?: "" }, { debugBuild },
+        { action -> enqueue { if (privacy.get() == 1 && !stopped) action() } }, ::warn)
+    /** True while taps are captured: allowed by the portal and the options, and a screen is known. Cheap: read it before any hit test. */
+    @Volatile public var heatmapActive: Boolean = false
+        private set
+    /** Called on the SDK worker when the heatmap screen changes while capture is on (the debug screenshot hook). */
+    @Volatile public var heatmapScreenListener: Runnable? = null
 
     /**
      * Whether automatic screen hooks should be installed: the code option is not false and the settings saved from an
@@ -69,8 +82,23 @@ public class PulseClient @JvmOverloads constructor(
     private var sessionFields = emptyMap<String, String>()
     private var newInstallSession = false
     private var lastScreen: String? = null
+    private val errorCounts = HashMap<String, Int>()
+    private var errorCountSession: String? = null
+    private var launch = PulseLaunch { null }
+    private var launchPending = true
+    private var foreground: ForegroundStats? = null
+    private var foregroundStart: Long? = null
+    private var foregroundSeen = false
+    private var quota: DayQuota? = null
+    private val sessionCaps = HashMap<String, Int>()
+    private var capSession: String? = null
+    private var droppedAutomatic = 0
+    private var permissions: Map<String, String>? = null
+    @Volatile private var currentSession: String? = null
     private data class Waiter(val token: String, var target: Set<String>?, val completion: Runnable)
     private val waiters = mutableListOf<Waiter>()
+    /** App Control: the rules the app owner set in the portal and the state derived from them. */
+    public val control: ControlClient = ControlClient(clock, scheduler, transport)
 
     /** Conservative before initialization; true until persisted privacy has been read or opt-in saved. */
     public var optOut: Boolean
@@ -80,8 +108,11 @@ public class PulseClient @JvmOverloads constructor(
             enqueue {
                 if (requestedRevision != revision.get()) return@enqueue
                 capture.reset(); early.clear(); queue.clear(); cancelActive(); cancelConfig(); installHash = null
+                heatmap.drop(); heatmap.setScreen(null, 0); shots.forget(); heatmapActive = false
                 usage = null; usageUnreadable = false; sessionFields = emptyMap(); newInstallSession = false; installCreated = false
-                lastScreen = null
+                lastScreen = null; errorCounts.clear(); errorCountSession = null
+                foreground = null; foregroundStart = null; quota = null; sessionCaps.clear(); capSession = null; droppedAutomatic = 0
+                permissions = null
                 desiredPreference = value; preferenceRevision = requestedRevision
                 generation = UUID.randomUUID().toString()
                 persistPreference(); completeWaiters(); requestPump()
@@ -92,23 +123,33 @@ public class PulseClient @JvmOverloads constructor(
     @JvmOverloads
     public fun initialize(key: String?, requested: PulseOptions? = null, storage: PulseStorage,
         environment: PulseEnvironment, defaultDebug: Boolean = false,
-        dynamicValues: PulseDynamicValues = PulseDynamicValues { emptyMap() }) {
+        dynamicValues: PulseDynamicValues = PulseDynamicValues { emptyMap() }, launch: PulseLaunch = PulseLaunch { null }) {
+        if (crashStorage == null && !key.isNullOrBlank()) crashStorage = storage
         enqueue {
             if (appKey != null || stopped || key.isNullOrBlank() || key.any { it.code < 32 || it.code == 127 }) return@enqueue
             val normalized = (requested ?: PulseOptions()).normalized()
             val address = endpoint(normalized.host) ?: return@enqueue
             this.storage = storage; options = normalized.copy(debug = normalized.debug ?: defaultDebug)
-            appKey = key; endpoint = address; queueName = "queue-" + Hash.hex(key) + ".bin"
+            appKey = key; endpoint = address; debugBuild = defaultDebug; queueName = "queue-" + Hash.hex(key) + ".bin"
             queue = DurableQueue(options)
             interval = options.flushIntervalSeconds; nextFlush = clock.nowMillis() // first batch leaves at once; later ones follow the interval
-            dynamic = dynamicValues
+            dynamic = dynamicValues; this.launch = launch
             system = environment.system().filterKeys { it in SystemKeys.BASE || options.sendAppIdentity && it in SystemKeys.IDENTITY || it in SystemKeys.EXTRA }
                 .mapValues { if (it.key in SystemKeys.EXTRA) boundedExtra(it.value) else boundedString(it.value) }.toMutableMap().apply {
                     put("sdkName", PulseInfo.SDK_NAME); put("sdkVersion", PulseInfo.VERSION)
                     options.appVersion?.let { put("appVersion", boundedString(it)) }
                 }
-            readPrivacy(); applyCachedSettings(); requestPump(); fetchSettings()
+            readPrivacy(); sendPendingCrash(); applyCachedSettings(); requestPump(); fetchSettings()
+            startControl(key, address, storage, normalized)
         }
+    }
+
+    /** App Control starts after everything else; it never waits for the network and a failure in it never reaches the app. */
+    private fun startControl(key: String, address: java.net.URL, storage: PulseStorage, normalized: PulseOptions) {
+        try {
+            control.start(key, address, normalized.control, storage, system["appVersion"].orEmpty(), system["appName"].orEmpty(),
+                PulseInfo.SDK_NAME + "@" + PulseInfo.VERSION, "android", debugBuild)
+        } catch (_: Exception) { warn("App Control not started.") }
     }
 
     /** Capture one signal. Unsupported props and invalid signals are dropped safely. */
@@ -121,16 +162,86 @@ public class PulseClient @JvmOverloads constructor(
         enqueue { capture(at, type, value, copied, capturedRevision) }
     }
 
-    private fun capture(at: Long, type: String, value: Double?, copied: PropertyCopy, capturedRevision: Long, screenKind: Int = 0) {
+    private fun capture(at: Long, type: String, value: Double?, copied: PropertyCopy, capturedRevision: Long, screenKind: Int = 0,
+        error: Map<String, Any?>? = null, heatmap: Map<String, Any?>? = null) {
         if (privacy.get() == 2 || stopped || capturedRevision != revision.get()) return
         if (copied.dropped) warn("Unsupported or oversized properties ignored.")
         val sanitized = SignalJson.sanitize(copied.values) { warn("Unsupported or oversized properties ignored.") }
-        val input = capture.capture(at, type, value, sanitized, localFields(at), if (appKey != null) extraFields() else null).copy(screen = screenKind)
+        val input = capture.capture(at, type, value, sanitized, localFields(at), if (appKey != null) extraFields() else null).copy(screen = screenKind, error = error, heatmap = heatmap)
+        currentSession = input.session
         if (appKey == null) {
             if (early.size == 100) early.removeFirst()
             early.addLast(input)
         } else { append(input); requestPump() }
     }
+
+    /**
+     * Send a handled error as `pulse.error` with kind `handled`: its type, filtered message and readable frames, plus
+     * optional props. At most 10 per error type and session are sent; the rest are dropped.
+     */
+    @JvmOverloads
+    public fun trackError(error: Throwable?, props: Map<String, *>? = null) {
+        if (error == null || privacy.get() == 2) return
+        val at = clock.nowMillis()
+        val capturedRevision = revision.get()
+        val copied = try { copyProps(props) } catch (_: Exception) { PropertyCopy(emptyMap(), true) }
+        enqueue { captureError(at, error, copied, capturedRevision) }
+    }
+
+    private fun captureError(at: Long, error: Throwable, copied: PropertyCopy, capturedRevision: Long) {
+        if (privacy.get() == 2 || stopped || capturedRevision != revision.get()) return
+        val report = ErrorPayload.from("handled", error)
+        val type = report["type"] as String
+        val session = capture.sessionAt(at)
+        if (session == null || session != errorCountSession) errorCounts.clear()
+        val count = errorCounts[type] ?: 0
+        if (count >= MAX_ERRORS_PER_TYPE) return
+        capture(at, "pulse.error", null, copied, capturedRevision, error = report)
+        errorCountSession = capture.sessionAt(at)
+        errorCounts[type] = count + 1
+    }
+
+    /**
+     * A handler for uncaught exceptions that writes a small crash file and then calls [previous] with the same
+     * arguments. The next launch sends the file as `pulse.error` with kind `crash` and deletes it. Platform adapters
+     * install it as the default handler; waiting for the file is bounded by [timeoutMillis].
+     */
+    @JvmOverloads
+    public fun crashHandler(previous: Thread.UncaughtExceptionHandler?, timeoutMillis: Long = 1000): Thread.UncaughtExceptionHandler =
+        CrashHandler(previous, ::crashTarget, clock, { currentSession }, timeoutMillis.coerceIn(0, 5000))
+
+    /**
+     * Where a crash goes right now. Opted out or stopped: nowhere. Privacy known: the loaded storage. Privacy not known
+     * yet (the worker has not run): the storage given to initialize, marked early; the next launch reads the stored
+     * choice first and drops the file when the user is opted out.
+     */
+    private fun crashTarget(): Pair<PulseStorage, Boolean>? {
+        if (stopped) return null
+        return when (privacy.get()) {
+            2 -> null
+            1 -> storage?.let { it to false }
+            else -> (storage ?: crashStorage)?.let { it to true }
+        }
+    }
+
+    /** Lets a platform adapter name the crash directory before its worker has created the real storage (no IO). */
+    public fun prepareCrashStorage(early: PulseStorage) { if (crashStorage == null) crashStorage = early }
+
+    /** Send the crash file an earlier launch left behind, once. An opted-out app drops it instead. */
+    private fun sendPendingCrash() {
+        val files = storage ?: return
+        if (privacy.get() != 1) return
+        try {
+            val bytes = files.read(CrashRecord.FILE) ?: return
+            files.remove(CrashRecord.FILE)
+            val now = clock.nowMillis()
+            val record = CrashRecord.decode(bytes, now) ?: return
+            store(Input(record.at, record.session, null, "pulse.error", null, emptyMap(), local = localFields(record.at),
+                extra = extraFields(), error = record.error))
+        } catch (_: Exception) { warn("Crash report not read.") }
+    }
+
+    private fun dropCrashFile(store: PulseStorage) { try { store.remove(CrashRecord.FILE) } catch (_: Exception) { warn("Crash report not removed.") } }
 
     /**
      * Record a screen appearance as `pulse.screen_view` with `screen` and, when known, `previousScreen`.
@@ -164,7 +275,7 @@ public class PulseClient @JvmOverloads constructor(
         val props = linkedMapOf<String, Any?>("screen" to name)
         lastScreen?.let { props["previousScreen"] = it }
         lastScreen = name
-        return input.copy(props = props, screen = 0)
+        return input.copy(props = props, screen = 0, auto = input.screen == 2)
     }
 
     /** Hash a caller-selected ID on the worker, or clear it. The raw ID is never persisted or logged. */
@@ -182,6 +293,7 @@ public class PulseClient @JvmOverloads constructor(
         enqueue {
             if (cancelled.get() != 0) return@enqueue
             if (appKey == null || optOut || stopped || halted) { callback(completion); return@enqueue }
+            heatmap.flush(clock.nowMillis())
             val didLoad = load()
             if (completion != null) waiters.add(Waiter(token, if (didLoad) liveIds() else null, completion))
             forced = true; pump()
@@ -200,7 +312,7 @@ public class PulseClient @JvmOverloads constructor(
     }
 
     /** Best-effort background save and flush. Never waits for network. */
-    public fun background() { enqueue { if (!stopped) { touchUsage(); forced = true; pump() } } }
+    public fun background() { enqueue { if (!stopped) { heatmap.flush(clock.nowMillis()); touchUsage(); forced = true; pump() } } }
 
     /** Bounded local save for background workers. The UI adapter calls the nonblocking variant. */
     @JvmOverloads
@@ -215,8 +327,8 @@ public class PulseClient @JvmOverloads constructor(
         val done = CountDownLatch(1)
         enqueue {
             try {
-                if (stop) { touchUsage(); stopped = true; timer?.cancel(); timer = null; cancelActive(); cancelConfig(); if (load()) persist(); finishAllWaiters() }
-                else { forced = true; pump() }
+                if (stop) { control.stop(); heatmap.flush(clock.nowMillis()); touchUsage(); stopped = true; heatmapActive = false; timer?.cancel(); timer = null; cancelActive(); cancelConfig(); if (load()) persist(); finishAllWaiters() }
+                else { heatmap.flush(clock.nowMillis()); forced = true; pump() }
             } finally { done.countDown() }
         }
         return try { done.await(timeoutMillis.coerceIn(0, 2000), TimeUnit.MILLISECONDS) }
@@ -230,6 +342,7 @@ public class PulseClient @JvmOverloads constructor(
             val savedGeneration = store.read("privacy-generation")
             val text = savedGeneration?.let(JsonReader::utf8)
             val valid = savedGeneration == null || text != null && UUID.fromString(text).toString() == text
+            if (valid && marker != null && !marker.contentEquals(byteArrayOf(0))) dropCrashFile(store)
             if (desiredPreference == null) {
                 generation = if (valid) text ?: "" else ""
                 synchronized(privacyLock) {
@@ -248,7 +361,14 @@ public class PulseClient @JvmOverloads constructor(
             queueName?.let(store::remove)
             store.remove(INSTALL_ID)
             store.remove(USAGE)
+            store.remove(CrashRecord.FILE)
             store.remove(RemoteSettings.FILE)
+            store.remove(HeatmapShots.FILE)
+            store.remove(AutoSignals.FOREGROUND_FILE)
+            store.remove(AutoSignals.QUOTA_FILE)
+            store.remove(AutoSignals.PERMISSIONS_FILE)
+            // Records from the time of the opt-out must not be sent after a later opt-in: the marker moves to now.
+            if (desired) store.replace(AutoSignals.EXIT_MARKER_FILE, ExitMarker.encode(clock.nowMillis()))
             if (!desired) store.replace("opt-out", byteArrayOf(0))
             desiredPreference = null
             synchronized(privacyLock) { if (preferenceRevision == revision.get()) privacy.set(if (desired) 2 else 1) }
@@ -262,20 +382,27 @@ public class PulseClient @JvmOverloads constructor(
     private fun append(captured: Input) {
         val input = if (captured.screen > 0) resolveScreen(captured) ?: return else captured
         if (input.newSession) startSession(input)
+        checkPermissions(input)
         store(input)
     }
 
     /** Latest capture timestamp handed out in this process, in milliseconds. Touched only on the worker. */
     private var lastStamp = Long.MIN_VALUE / 2
 
-    private fun store(captured: Input) {
-        if (!signalAllowed(captured.type)) return
+    /** [exact]: the signal keeps its own time (an exit record carries the OS time) and does not move the running stamp. */
+    private fun store(stored: Input, exact: Boolean = false) {
+        if (!signalAllowed(stored.type)) return
+        if (!withinQuota(stored)) return
+        if (stored.type == RemoteSettings.SCREEN_VIEW) screenStored(stored.props["screen"] as? String, stored.timestamp)
+        // A heatmap signal never carries (and so never uses up) the dropped count.
+        val carried = if (droppedAutomatic > 0 && stored.type != RemoteSettings.HEATMAP) stored.copy(local = stored.local + ("droppedAutomatic" to droppedAutomatic.toString())) else stored
+        val captured = if (carried.error != null && options.errorDetail == ErrorDetail.TYPE_ONLY) carried.copy(error = ErrorPayload.typeOnly(carried.error)) else carried
         // Strictly increasing at millisecond resolution, in storing order: automatic signals are stored before the
         // signal that started the session, so they keep the smaller timestamps.
-        lastStamp = maxOf(captured.timestamp, lastStamp + 1)
-        val input = captured.copy(timestamp = lastStamp)
+        val input = if (exact) captured else { lastStamp = maxOf(captured.timestamp, lastStamp + 1); captured.copy(timestamp = lastStamp) }
         val hashed = if (input.userHash != null) input else input.copy(userHash = installHash())
         val json = SignalJson.encode(hashed, systemFor(input), options.debug == true) ?: return
+        if (stored.type != RemoteSettings.HEATMAP) droppedAutomatic = 0
         queue.entries.add(Entry(UUID.randomUUID().toString(), input.timestamp, json))
     }
 
@@ -288,6 +415,7 @@ public class PulseClient @JvmOverloads constructor(
             merged["sessionSeconds"] = ((input.timestamp - input.sessionStart) / 1000).toString()
         }
         if (newInstallSession) merged["isNewInstall"] = "true"
+        foregroundKeys(input.timestamp, merged)
         if (settings.hiddenKeys.isNotEmpty()) merged.keys.removeAll(settings.hiddenKeys)
         return merged
     }
@@ -316,30 +444,45 @@ public class PulseClient @JvmOverloads constructor(
         usage = if (holdVersion) started.usage.copy(version = current.version, build = current.build) else started.usage
         sessionFields = started.fields; newInstallSession = created
         persistUsage()
-        if (created) store(input.copy(type = "pulse.new_install", value = null, props = emptyMap(), newSession = false))
+        if (created) store(input.copy(type = "pulse.new_install", value = null, props = emptyMap(), newSession = false, error = null, heatmap = null))
         if (started.updated && !created) {
             val props = mapOf<String, Any?>("previousVersion" to (started.previousVersion ?: ""), "previousBuild" to (started.previousBuild ?: ""))
-            store(input.copy(type = "pulse.app_updated", value = null, props = props, newSession = false))
+            store(input.copy(type = "pulse.app_updated", value = null, props = props, newSession = false, error = null, heatmap = null))
         }
-        store(input.copy(type = "pulse.session_started", value = null, props = emptyMap(), newSession = false))
+        val cold = launchPending; launchPending = false
+        val local = if (cold) launchFields(input.local) else input.local
+        store(input.copy(type = "pulse.session_started", value = null, props = emptyMap(), newSession = false, local = local, error = null, heatmap = null))
+    }
+
+    /** `launchMs` for the session_started of the first session of the process; left out when unknown or absurd. */
+    private fun launchFields(local: Map<String, String>): Map<String, String> {
+        val ms = try { launch.launchMs() } catch (_: Exception) { null }
+        return if (ms != null && ms in 0..AutoSignals.MAX_LAUNCH_MS) local + ("launchMs" to ms.toString()) else local
     }
 
     /** What the portal settings and the code options allow to be sent; a code option can only switch things off. */
     private fun signalAllowed(type: String?): Boolean {
         if (type == null) return true
+        if (type == RemoteSettings.HEATMAP) return heatmapAllowed()
+        if (type in settings.pausedSignals) return false
         if (type == RemoteSettings.SCREEN_VIEW) return portalAllowsScreenViews()
-        if (type in RemoteSettings.AUTOMATIC_TYPES)
+        if (type in RemoteSettings.AUTOMATIC_TYPES) {
+            // The two opt-in types need the portal to list them; no cached settings means they stay off.
+            if (type in AutoSignals.OPT_IN && type !in settings.enabledSignals) return false
             return automaticSignals && options.automaticSignals && settings.automaticSignals && type !in settings.disabledSignals
-        return true
+        }
+        return type !in settings.disabledSignals
     }
     private fun portalAllowsScreenViews(): Boolean =
-        settings.screenViews && settings.automaticSignals && RemoteSettings.SCREEN_VIEW !in settings.disabledSignals
+        settings.screenViews && settings.automaticSignals && RemoteSettings.SCREEN_VIEW !in settings.disabledSignals &&
+            RemoteSettings.SCREEN_VIEW !in settings.pausedSignals
 
     /** Use the settings saved by an earlier launch for this whole run. No file or a damaged file means everything on. */
     private fun applyCachedSettings() {
         val bytes = try { storage?.read(RemoteSettings.FILE) } catch (_: Exception) { null }
         settings = bytes?.let(RemoteSettings::parse) ?: RemoteSettings()
         screenViewHooksEnabled = options.automaticScreenViews && portalAllowsScreenViews()
+        liveSettings = null; refreshHeatmap()
     }
 
     /** Ask the portal for the settings once. The answer is saved for the next launch and never changes this run. */
@@ -366,13 +509,204 @@ public class PulseClient @JvmOverloads constructor(
         if (configToken != token) return
         configToken = null; configRequest = null; configWatchdog?.cancel(); configWatchdog = null
         if (response.status != 200 || stopped || privacy.get() != 1) return
-        if (RemoteSettings.parse(response.body) == null) return
+        val parsed = RemoteSettings.parse(response.body) ?: return
         try { store.replace(RemoteSettings.FILE, response.body) } catch (_: Exception) { warn("Settings not saved.") }
+        liveSettings = parsed; refreshHeatmap()
+    }
+
+    // ---- heatmaps: taps per screen, and the debug screenshot ----
+
+    /** Portal switch and code option, automatic signals, the type not disabled or paused, and screen views allowed (the screen name comes from them). */
+    private fun heatmapAllowed(): Boolean {
+        if (privacy.get() != 1 || stopped || appKey == null) return false
+        val live = liveSettings ?: settings
+        return options.captureHeatmaps && options.automaticSignals && automaticSignals && live.heatmaps && live.automaticSignals &&
+            RemoteSettings.HEATMAP !in live.disabledSignals && RemoteSettings.HEATMAP !in live.pausedSignals && portalAllowsScreenViews()
+    }
+
+    /** Re-reads the rules: switching off stops capture at once and drops the buffer. */
+    private fun refreshHeatmap() {
+        val allowed = heatmapAllowed()
+        if (!allowed) heatmap.drop()
+        heatmapActive = allowed && heatmap.screen != null
+    }
+
+    /** A screen view was stored: it is the heatmap screen from now on, and the old screen's points go out first. */
+    private fun screenStored(name: String?, at: Long) {
+        heatmap.setScreen(name, at); refreshHeatmap()
+        if (heatmapActive) try { heatmapScreenListener?.run() } catch (_: Exception) { warn("Heatmap screen hook failed.") }
+    }
+
+    private fun emitHeatmap(at: Long, points: Map<String, Any?>) {
+        capture(at, RemoteSettings.HEATMAP, null, PropertyCopy(emptyMap(), false), revision.get(), heatmap = points)
+        heatmap.adoptSession(currentSession)
+    }
+
+    private fun shotTarget(): HeatmapShots.Target? { val where = endpoint ?: return null; val key = appKey ?: return null; return HeatmapShots.Target(where, key) }
+
+    /**
+     * One tap, already reduced by the platform to a position in logical px (dp on Android) and the privacy facts it could
+     * see. A tap is dropped here when capture is off, no screen is known, the keyboard is visible, the target is a text or
+     * secure input or the target is marked to be ignored. Safe on any thread; the work runs on the SDK worker.
+     */
+    public fun heatmapTap(x: Double, y: Double, width: Double, height: Double, keyboardVisible: Boolean, inputTarget: Boolean, ignored: Boolean) {
+        if (!heatmapActive || keyboardVisible || inputTarget || ignored) return
+        val at = clock.nowMillis(); val capturedRevision = revision.get()
+        enqueue { if (capturedRevision == revision.get() && privacy.get() == 1) heatmap.onTap(at, x, y, width, height, false, false, false) }
+    }
+
+    /** Whether a debug picture of the current screen is wanted now (debug app build, capture on, not yet sent for this version, not rate limited). */
+    public fun heatmapShotTicket(widthDp: Double, heightDp: Double, result: (HeatmapShotTicket?) -> Unit) {
+        enqueue {
+            val ticket = if (heatmapAllowed()) shots.ticket(heatmap.screen, widthDp, heightDp) else null
+            try { result(ticket) } catch (_: Exception) { warn("Heatmap picture hook failed.") }
+        }
+    }
+
+    /** Uploads one encoded picture (PNG, JPEG or WebP, at most 2 MiB) for a ticket. [done] gets true only when the server stored it. */
+    @JvmOverloads
+    public fun heatmapScreenshot(ticket: HeatmapShotTicket, bytes: ByteArray, contentType: String, done: (Boolean) -> Unit = {}) {
+        enqueue { if (heatmapAllowed()) shots.upload(ticket, bytes, contentType, done) else done(false) }
     }
 
     private fun cancelConfig() {
         configToken = null; configRequest?.cancel(); configRequest = null; configWatchdog?.cancel(); configWatchdog = null
     }
+
+    // ---- automatic events: foreground, deep links, permissions, quota guards, exit reasons ----
+
+    /**
+     * The app came to the foreground (the first Activity started). Counts the foreground for `foregroundsToday` and sends
+     * `pulse.app_opened` when the portal switched it on. Repeated calls without a [appBackgrounded] in between do nothing.
+     */
+    public fun appForegrounded() {
+        control.onForeground()
+        if (privacy.get() == 2) return
+        val at = clock.nowMillis(); val capturedRevision = revision.get()
+        enqueue { foregrounded(at, capturedRevision) }
+    }
+
+    /** The app went to the background (the last Activity stopped). Sends `pulse.app_backgrounded` when the portal switched it on. */
+    public fun appBackgrounded() {
+        if (privacy.get() == 2) return
+        val at = clock.nowMillis(); val capturedRevision = revision.get()
+        enqueue { backgrounded(at, capturedRevision) }
+    }
+
+    private fun foregrounded(at: Long, capturedRevision: Long) {
+        if (privacy.get() == 2 || stopped || capturedRevision != revision.get() || appKey == null || foregroundStart != null) return
+        val cold = !foregroundSeen
+        foregroundSeen = true; foregroundStart = at
+        val today = UsageStats.dayOf(at, TimeZone.getDefault().getOffset(at).toLong())
+        foreground = (foreground ?: loadForeground()).foregrounded(today)
+        persistForeground()
+        capture(at, AutoSignals.APP_OPENED, null, PropertyCopy(mapOf("coldStart" to cold.toString()), false), capturedRevision)
+    }
+
+    private fun backgrounded(at: Long, capturedRevision: Long) {
+        if (privacy.get() == 2 || stopped || capturedRevision != revision.get() || appKey == null) return
+        val start = foregroundStart ?: return
+        foregroundStart = null
+        val seconds = ((at - start) / 1000).coerceAtLeast(0)
+        // The signal shows the previous period in previousForegroundSeconds; this period is stored after it.
+        // Idle for 30 minutes or more: the session has ended, and a background event alone must not open a new one. It is dropped.
+        if (capture.sessionAt(at) != null) capture(at, AutoSignals.APP_BACKGROUNDED, null, PropertyCopy(mapOf("foregroundSeconds" to seconds), false), capturedRevision)
+        foreground = (foreground ?: loadForeground()).backgrounded(seconds)
+        persistForeground()
+    }
+
+    /**
+     * Report a link that opened the app, as `pulse.deep_link` with scheme, host and a path where numeric and uuid-like
+     * segments become `:id`, plus the three utm_ campaign tags when present. Nothing else of the link is read or sent.
+     */
+    public fun deepLink(uri: String?) {
+        if (privacy.get() == 2) return
+        val props = DeepLink.props(uri) ?: return
+        val at = clock.nowMillis(); val capturedRevision = revision.get()
+        enqueue { capture(at, AutoSignals.DEEP_LINK, null, PropertyCopy(props, false), capturedRevision) }
+    }
+
+    /**
+     * Send the exit records an Android process left behind as `pulse.error` with kind `exit`. Only records newer than the
+     * stored marker, not older than 7 days, at most 10 per launch (the newest), each once. Does nothing with `captureErrors` off.
+     */
+    public fun reportExits(records: List<PulseExitRecord>) {
+        if (privacy.get() == 2) return
+        val copy = records.toList()
+        enqueue { exitsReceived(copy) }
+    }
+
+    private fun exitsReceived(records: List<PulseExitRecord>) {
+        if (privacy.get() != 1 || stopped || !options.captureErrors || appKey == null) return
+        val files = storage ?: return
+        val now = clock.nowMillis()
+        val marker = try { files.read(AutoSignals.EXIT_MARKER_FILE)?.let { ExitMarker.decode(it) ?: return } } catch (_: Exception) { return }
+        val newer = records.filter { it.timeMillis > (marker ?: Long.MIN_VALUE) && it.timeMillis <= now + AutoSignals.EXIT_MAX_FUTURE_MILLIS }
+        val newest = newer.maxOfOrNull { it.timeMillis } ?: return
+        // The marker is written first: a crash while sending can lose a record but never send one twice.
+        try { files.replace(AutoSignals.EXIT_MARKER_FILE, ExitMarker.encode(newest)) } catch (_: Exception) { warn("Exit marker not saved."); return }
+        val session = UUID.randomUUID().toString()
+        newer.filter { it.timeMillis >= now - AutoSignals.EXIT_MAX_AGE_MILLIS }.sortedBy { it.timeMillis }.takeLast(AutoSignals.MAX_EXITS_PER_LAUNCH).forEach {
+            val error = ErrorPayload.normalize("exit", it.reason, null, it.frames, false)
+            store(Input(it.timeMillis, session, null, "pulse.error", null, emptyMap(), local = localFields(it.timeMillis), extra = extraFields(), error = error), exact = true)
+        }
+        requestPump()
+    }
+
+    /** Sends `pulse.permission_changed` once when a status read now differs from the one stored; the first reading is only stored. */
+    private fun checkPermissions(input: Input) {
+        val current = extraFields().filterKeys { it in AutoSignals.PERMISSIONS }.filterValues { it in AutoSignals.PERMISSION_VALUES }
+        if (current.isEmpty()) return
+        var known = permissions ?: loadPermissions()
+        var changed = false
+        for ((key, name) in AutoSignals.PERMISSIONS) {
+            val now = current[key] ?: continue
+            val before = known[name]
+            if (before == now) continue
+            known = known + (name to now); changed = true
+            if (before != null) store(input.copy(type = AutoSignals.PERMISSION_CHANGED, value = null,
+                props = mapOf("permission" to name, "from" to before, "to" to now), newSession = false, screen = 0, error = null, auto = false, heatmap = null))
+        }
+        if (changed) { permissions = known; persistPermissions() }
+    }
+
+    /** Per session and per local day limits for automatic signals; a dropped one is counted for `droppedAutomatic`. */
+    private fun withinQuota(input: Input): Boolean {
+        val type = input.type ?: return true
+        val automatic = type in RemoteSettings.AUTOMATIC_TYPES || type == RemoteSettings.SCREEN_VIEW && input.auto
+        if (!automatic) return true
+        if (input.session != capSession) { sessionCaps.clear(); capSession = input.session }
+        val cap = AutoSignals.SESSION_CAPS[type]
+        if (cap != null && (sessionCaps[type] ?: 0) >= cap) { droppedAutomatic++; return false }
+        val today = UsageStats.dayOf(input.timestamp, TimeZone.getDefault().getOffset(input.timestamp).toLong())
+        val next = (quota ?: loadQuota()).take(today)
+        if (next == null) { droppedAutomatic++; return false }
+        quota = next; persistQuota()
+        sessionCaps[type] = (sessionCaps[type] ?: 0) + 1
+        return true
+    }
+
+    private fun foregroundKeys(at: Long, into: MutableMap<String, String>) {
+        val stats = foreground ?: loadForeground()
+        stats.countFor(UsageStats.dayOf(at, TimeZone.getDefault().getOffset(at).toLong()))?.let { into["foregroundsToday"] = it.toString() }
+        stats.previousSeconds?.let { into["previousForegroundSeconds"] = it.toString() }
+    }
+
+    private fun <T> loadState(name: String, decode: (ByteArray) -> T?, fresh: T): T {
+        val bytes = try { storage?.read(name) } catch (_: Exception) { null }
+        return (bytes?.let(decode) ?: fresh)
+    }
+    private fun loadForeground(): ForegroundStats = loadState(AutoSignals.FOREGROUND_FILE, ForegroundStats::decode, ForegroundStats.fresh()).also { foreground = it }
+    private fun loadQuota(): DayQuota = loadState(AutoSignals.QUOTA_FILE, DayQuota::decode, DayQuota.fresh()).also { quota = it }
+    private fun loadPermissions(): Map<String, String> = loadState(AutoSignals.PERMISSIONS_FILE, PermissionStore::decode, emptyMap<String, String>()).also { permissions = it }
+    private fun persistState(name: String, bytes: ByteArray?) {
+        val store = storage ?: return
+        if (bytes == null || privacy.get() != 1) return
+        try { store.replace(name, bytes) } catch (_: Exception) { warn("Automatic event state not saved.") }
+    }
+    private fun persistForeground() = persistState(AutoSignals.FOREGROUND_FILE, foreground?.encode())
+    private fun persistQuota() = persistState(AutoSignals.QUOTA_FILE, quota?.encode())
+    private fun persistPermissions() = persistState(AutoSignals.PERMISSIONS_FILE, permissions?.let(PermissionStore::encode))
 
     private fun loadUsage(): UsageStats {
         val store = storage
@@ -560,6 +894,7 @@ public class PulseClient @JvmOverloads constructor(
 
     private companion object {
         const val INSTALL_ID = "install-id"
+        const val MAX_ERRORS_PER_TYPE = 10
         const val USAGE = "usage"
         const val REQUEST_DEADLINE_MILLIS = 150_000L
         val INSTALL_ID_FORMAT = Regex("^[0-9a-f]{32}$")

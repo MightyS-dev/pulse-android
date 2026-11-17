@@ -57,9 +57,9 @@ public class PulseHttpTransport internal constructor(private val connectTimeoutM
         // left untouched: refusing to send while one is installed would silently disable analytics in those apps.
         http.instanceFollowRedirects = false
         http.useCaches = false; http.doOutput = !request.isGet; http.requestMethod = if (request.isGet) "GET" else "POST"
-        http.connectTimeout = connectTimeoutMillis
-        http.readTimeout = minOf(90000, readTimeoutBaseMillis + request.body.size / 16384 * 1000)
-        http.setRequestProperty("X-App-Key", request.appKey)
+        http.connectTimeout = if (request.control) CONTROL_CONNECT_MILLIS else connectTimeoutMillis
+        http.readTimeout = if (request.control) CONTROL_READ_MILLIS else minOf(90000, readTimeoutBaseMillis + request.body.size / 16384 * 1000)
+        if (!request.control) http.setRequestProperty("X-App-Key", request.appKey)
         http.setRequestProperty("User-Agent", PulseInfo.SDK_NAME + "/" + PulseInfo.VERSION)
         http.setRequestProperty("Accept-Encoding", "identity")
         if (request.isGet) {
@@ -67,7 +67,7 @@ public class PulseHttpTransport internal constructor(private val connectTimeoutM
             http.setRequestProperty("Accept", "application/json")
         } else {
             http.setFixedLengthStreamingMode(request.body.size)
-            http.setRequestProperty("Content-Type", "application/json")
+            http.setRequestProperty("Content-Type", request.contentType ?: "application/json")
             if (request.gzip) http.setRequestProperty("Content-Encoding", "gzip")
             request.batchId?.let { http.setRequestProperty("X-Pulse-Batch", it) }
             http.outputStream.use { it.write(request.body) }
@@ -84,6 +84,11 @@ public class PulseHttpTransport internal constructor(private val connectTimeoutM
             }
         }
         return PulseResponse(status, if (output.size() > 65536) byteArrayOf() else output.toByteArray(), http.getHeaderField("Retry-After"))
+    }
+
+    private companion object {
+        const val CONTROL_CONNECT_MILLIS = 3000
+        const val CONTROL_READ_MILLIS = 5000
     }
 
     /** Stop this transport's own executor after cancelling the owning client. */

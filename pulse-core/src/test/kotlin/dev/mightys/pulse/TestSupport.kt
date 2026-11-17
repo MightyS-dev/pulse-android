@@ -35,12 +35,13 @@ class FakeStorage : PulseStorage {
     var failReads = false
     var failWrites = false
     var failPrivacy = false
+    var failNames = emptySet<String>()
     var afterReplace: ((String) -> Unit)? = null
     override fun read(name: String): ByteArray? {
         check(!failReads); return files[name]?.clone()
     }
     override fun replace(name: String, bytes: ByteArray) {
-        check(!failWrites && !(failPrivacy && name == "opt-out"))
+        check(!failWrites && !(failPrivacy && name == "opt-out") && name !in failNames)
         files[name] = bytes.clone(); afterReplace?.invoke(name)
     }
     override fun remove(name: String) { check(!failWrites); files.remove(name) }
@@ -55,7 +56,18 @@ class FakeTransport : PulseTransport {
     val configReplies = ArrayDeque<PulseResponse>()
     var configHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null
     var handler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null
+    /** App Control reads (GET with control set) are kept apart too. Without a handler or a reply they answer 404. */
+    val controlRequests = mutableListOf<PulseRequest>()
+    val controlReplies = ArrayDeque<PulseResponse>()
+    var controlHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null
+    val controlCancellations = mutableListOf<FakeCancellation>()
     override fun send(request: PulseRequest, completion: (PulseResponse) -> Unit): PulseCancellation {
+        if (request.control) {
+            controlRequests.add(request)
+            val reading = FakeCancellation(); controlCancellations.add(reading)
+            controlHandler?.invoke(request, completion) ?: completion(controlReplies.poll() ?: PulseResponse(404))
+            return reading
+        }
         if (request.isGet) {
             configRequests.add(request)
             val reading = FakeCancellation()
@@ -73,13 +85,14 @@ class Harness(val options: PulseOptions = PulseOptions(), val storage: PulseStor
     random: PulseRandom = PulseRandom { 0.5 }, logger: PulseLogger = PulseLogger {},
     automatic: Boolean = false, val dynamic: PulseDynamicValues = PulseDynamicValues { emptyMap() },
     val env: Map<String, String> = mapOf("platform" to "mobile", "osName" to "Android"),
-    configReplies: List<PulseResponse> = emptyList(), configHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null) {
+    configReplies: List<PulseResponse> = emptyList(), configHandler: ((PulseRequest, (PulseResponse) -> Unit) -> Unit)? = null,
+    val launch: PulseLaunch = PulseLaunch { null }) {
     val scheduler = FakeScheduler(clock)
     val transport = FakeTransport()
     val client = PulseClient(clock, scheduler, transport, random, logger).also { it.automaticSignals = automatic }
     init { transport.configReplies.addAll(configReplies); transport.configHandler = configHandler; if (initialize) initialize(key) }
     fun initialize(key: String = "synthetic-key") {
-        client.initialize(key, options, storage, PulseEnvironment { env }, false, dynamic)
+        client.initialize(key, options, storage, PulseEnvironment { env }, false, dynamic, launch)
         settle()
     }
     fun settle() { scheduler.drain() }

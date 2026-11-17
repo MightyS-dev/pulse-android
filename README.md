@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.5")
+    implementation("dev.mightys:pulse-android:0.9.7")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.5"
+    implementation "dev.mightys:pulse-android:0.9.7"
 }
 ```
 
@@ -105,6 +105,32 @@ connection address, uses it only to derive a two-letter country code and does no
 
 Do not put personal data in event names, properties or the app version override.
 
+## Automatic signals
+
+Types the SDK can send by itself: `pulse.session_started`, `pulse.new_install`, `pulse.app_updated`, `pulse.screen_view`,
+`pulse.permission_changed`, `pulse.deep_link`, `pulse.app_opened`, `pulse.app_backgrounded` and `pulse.heatmap`. Switch them off in code with
+`PulseOptions(automaticSignals = false)` (all of them), `automaticScreenViews = false` (screen views) and
+`captureErrors = false` (crash capture and the exit reasons below) and `captureHeatmaps = false` (`pulse.heatmap`, see Heatmaps below); `Pulse.optOut = true` stops everything. The portal can
+switch each type off, `pulse.app_opened` and `pulse.app_backgrounded` are sent only when the portal turns them on, and `pulse.heatmap` only when the portal switches heatmaps on.
+Defaults and how many signals each type uses: https://pulse.mightys.dev/docs/automatic-signals/
+
+What the new ones carry: `pulse.app_opened` has `coldStart`, `pulse.app_backgrounded` has `foregroundSeconds`,
+`pulse.deep_link` has `scheme`, `host`, `path` (numeric and uuid-like segments become `:id`, at most 128 characters) and
+the `utmSource`, `utmMedium`, `utmCampaign` tags when the link has them, never the rest of the query or the fragment, and
+`pulse.permission_changed` has `permission` (`notification`), `from` and `to`. Links that open the app are read from the
+launching Activity's intent; call `Pulse.deepLink(uri)` from `onNewIntent` if your Activity does not call `setIntent`.
+Extra system fields: `launchMs` (only on the `pulse.session_started` of a cold start, from the process start to the first
+resumed Activity), `foregroundsToday`, `previousForegroundSeconds` and `notificationPermission` (granted, denied or
+notDetermined, read only; the SDK never shows a permission prompt and has no tracking permission on Android). On Android
+11 and later the SDK also sends why an earlier process of the app ended, from the system's exit history, as `pulse.error`
+with kind `exit` and type `anr`, `crash_native`, `low_memory`, `excessive_resource`, `initialization_failure`, `signaled`
+or `other` (an ANR carries the first 30 main thread frames, filtered). Normal exits and Java crashes (already captured) are
+not sent; at most 10 per launch, none older than 7 days, each once.
+
+Guards: per session at most 20 of each of app opened and app backgrounded, 10 deep links, 5 permission changes and 100
+automatic screen views, and at most 300 automatic signals per day. Dropped ones are counted and the count is sent once as
+`droppedAutomatic` on the next signal. Your own signals and errors are never limited by this.
+
 ## Screen views
 
 The SDK sends `pulse.screen_view` by itself, with no code from you. It records the simple class name of each Activity
@@ -125,6 +151,71 @@ opt-out like any signal. To switch off the automatic capture (the hooks stay qui
 ```kotlin
 Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(automaticScreenViews = false))
 ```
+
+## Heatmaps
+
+Heatmaps are off until you switch them on for the app in the portal; code can only switch them off
+(`PulseOptions(captureHeatmaps = false)`). A change in the portal reaches the app when it reads its settings (once per launch);
+switching off takes effect at once and drops what was buffered. When on, `pulse.heatmap` signals carry the screen name (the same
+name as the last `pulse.screen_view`), where the tap landed (x as a share of the window width, y in dp from the top of the
+window), the width bucket (phone below 600 dp, tablet below 1024 dp), the orientation and the kind: `tap` or `rage` (the 3rd or
+later tap within 1 second and 30 dp). A tap is a single finger that goes down and up without moving past the touch slop.
+
+- **Collected:** screen name, position, kind. **Never collected:** text, view ids or class names, recordings, anything typed, the
+  keyboard. Nothing is captured while the soft keyboard is visible, nor on an `EditText` or any other text editor, a password
+  field, a `WebView` (a page may hold form fields the SDK cannot see) or anything inside them. With no known screen nothing is
+  captured, and with screen views switched off in the portal there are no heatmaps either.
+- **Ignore a view:** `Pulse.heatmapIgnore(view)` (Java: `Pulse.heatmapIgnore(view);`) on the view or any ancestor. Call it on the
+  main thread; `Pulse.heatmapIgnore(view, false)` takes the mark off again. It sets a view tag, so it does not touch your own tags.
+- **Compose:** taps on Compose content are captured at window level, but the SDK cannot look inside Compose (it has no Compose
+  dependency), so a Compose text field is excluded only while the keyboard is visible, not on the first tap that opens it. To
+  keep an area out, host it in a View that carries the mark, for example `AndroidView(factory = { FrameLayout(it).also { v -> Pulse.heatmapIgnore(v) } })`
+  around the `ComposeView`, or mark the `ComposeView` itself. Dialogs and popups have their own windows and are not captured.
+- **How it is sent:** one `pulse.heatmap` signal per screen and window shape, when the screen changes, the window size or
+  orientation changes, the app goes to the background, 200 points are buffered, or on `flush`. At most 1000 points per session.
+  `pulse.heatmap` is not counted by the automatic signal guards.
+- **Screenshots, debug builds only:** when the app is debuggable (`ApplicationInfo.FLAG_DEBUGGABLE`) and heatmaps are on, the SDK
+  takes one picture of each screen about a second after it is shown (API 26 and later, never while the keyboard is visible, never
+  of a `FLAG_SECURE` window), once per screen, window shape and app version, scaled to at most 2048 px and encoded off the main
+  thread, and uploads it to the Pulse host so the portal can show the heatmap on it. Release builds never take or send a picture.
+  At most 20 uploads an hour; failures are silent.
+
+## Errors and crashes
+
+By default the SDK catches the errors your app does not handle and sends each as a `pulse.error` signal, so you can see
+where it broke. Nothing to set up.
+
+- **What is captured.** Uncaught exceptions on any thread. The SDK installs a default uncaught-exception handler that
+  calls the handler that was there before, with the same arguments, so your own crash reporting and Android's normal
+  behaviour are unchanged. It never swallows a crash and never throws.
+- **Crashes.** The process is ending, so the handler only writes one small file in the app's own storage
+  (`noBackupFilesDir/mightys-pulse`), waiting at most about a second and using no network. The next launch sends it as
+  kind `crash` (with the session it happened in) and deletes it.
+- **What an error carries.** `kind` (`crash`, or `handled` for your own calls), `type` (the exception class name), a
+  filtered `message` of at most 500 characters, up to 30 `frames` (top first, 300 characters each, for example
+  `com.example.CartViewModel.checkout CartViewModel.kt:42`) and `symbolicated`. A `cause` chain follows the frames as a
+  `Caused by: <type>` frame and the cause's own frames, within the same 30. The whole object is at most 16384 bytes.
+- **Personal data filter.** On the device, in the message and in every frame, emails, URLs' query strings and fragments,
+  UUIDs, IP addresses, runs of six or more digits and absolute paths (only the file name is kept) are replaced with
+  `<filtered>` or shortened. Do not put personal data in exception messages anyway.
+- **Limits.** At most 10 `pulse.error` signals per session and error type; more are dropped. Opt-out stops capture and
+  deletes a waiting crash file.
+- **Handled errors.** Send an error you caught yourself (Java: `Pulse.trackError(error)`):
+
+```kotlin
+try {
+    checkout()
+} catch (e: Exception) {
+    Pulse.trackError(e, mapOf("screen" to "cart"))
+    showRetry()
+}
+```
+
+- **Less detail.** `PulseOptions(errorDetail = ErrorDetail.TYPE_ONLY)` sends only the type: no message, no frames.
+- **Switch it off.** `PulseOptions(captureErrors = false)` installs no handler. `Pulse.trackError` still sends what you
+  pass to it.
+- **Symbols.** If you shrink your app with R8, class names in frames are short and not readable yet; those errors are
+  marked `symbolicated: false`. Mapping files are not uploaded by the SDK.
 
 ## Options
 
@@ -151,6 +242,10 @@ Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(
 | `appVersion` | package version name | Overrides the app version. |
 | `automaticScreenViews` | true | Sends `pulse.screen_view` when an Activity or AndroidX fragment is shown. False sends no automatic screen views. |
 | `automaticSignals` | true | Sends `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. False sends none of them. |
+| `captureErrors` | true | Catches unhandled errors and crashes and sends them as `pulse.error`. False installs no handler at all. |
+| `errorDetail` | `ErrorDetail.FULL` | `FULL` sends type, filtered message and frames. `TYPE_ONLY` sends the error type alone. |
+| `captureHeatmaps` | true | True follows the portal (heatmaps are off until it switches them on); false never captures taps. See Heatmaps. |
+| `control` | `ControlMode.Automatic` | App Control: `Automatic` checks the rules and shows the built-in screens, `Manual` checks and keeps the state but shows nothing, `Off` makes no App Control request at all. See App Control. |
 
 **Test mode.** Every signal carries a test flag. By default it follows the build: debuggable builds (what Android Studio
 runs) send test signals, release builds send real ones, with the same app key. Set `debug = true` or `debug = false` to
@@ -168,6 +263,61 @@ Everything is on when the settings cannot be read (offline, an error, nothing sa
 switch things off: `automaticScreenViews = false` or `automaticSignals = false` turn them off whatever the portal says,
 while true (the default) follows the portal and never turns on what the portal switched off. Opting out
 deletes the saved settings with the rest of the SDK's data.
+
+## App Control
+
+App Control lets you act on a version from the portal without shipping a new build: ask for an update, suggest one, put
+the app into maintenance, block a version that has a known problem, or show an announcement or a what's new card. It
+needs no extra code: after `Pulse.initialize` the SDK checks the rules in the background and shows the matching screen.
+
+```kotlin
+// Nothing to add. The default is ControlMode.Automatic.
+Pulse.initialize(this, "YOUR_APP_KEY")
+```
+
+What the user sees: a full screen they cannot close for a required update, a blocked version (without "continue") and
+maintenance; a dialog with "Update" and "Not now" for a suggested update; a card at the bottom for an announcement or
+what's new; a bar for maintenance that starts soon. Texts are built in for English, German, French, Spanish, Italian,
+Brazilian Portuguese, Japanese, Korean, Simplified Chinese, Turkish, Russian and Serbian (Latin), chosen by the app's
+language, then the system's, then English, and you can replace any title, text or button in the portal. The screens use
+the system theme (light and dark), respect the text size setting and read well with TalkBack. The Back button never
+closes a locking screen: it sends the app to the background.
+
+**Your own screens.** With `ControlMode.Manual` the SDK only keeps the state up to date and you draw whatever you like:
+
+```kotlin
+Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(control = ControlMode.Manual))
+
+Pulse.control.addListener { state ->               // called on the main thread
+    when (state.kind) {
+        ControlState.Kind.UpdateRequired -> showMyBlockingScreen(state.title, state.body)
+        ControlState.Kind.Maintenance -> showMaintenance(state.endsAt)
+        else -> hideMyScreen()
+    }
+}
+// Pulse.control.state is the current value; checkNow() asks again; openStore() opens the store;
+// dismiss() lets the user leave a state that allows it (a suggestion, a card, allowContinue).
+```
+
+`ControlMode.Off` makes no App Control request at all and the state is always `Normal`.
+
+**Google Play In-App Updates (optional).** If your app is installed from Google Play and already includes
+`com.google.android.play:app-update`, the Update button starts the immediate flow for required updates and blocked
+versions and the flexible flow for suggestions. The SDK does not add this library: it only uses it when it is there.
+Without it, Update opens the store link from the rules, or your Play page (the Play app first, then the web page).
+
+**Reviews.** App Control never asks for a rating. If you want a store review prompt, use the Google Play In-App Review
+API yourself at a moment you choose.
+
+**How it fails safely.** The check never delays `initialize` or the first frame, takes at most 5 seconds and is never
+retried in a loop (the next try is the next return to the foreground, at most once a minute). Anything that goes wrong
+(no network, a server error, a malformed answer, a wrong version of the format) keeps the last known state, or normal;
+nothing is ever blocked because something is unknown. A required update or a block saved on the device is ignored after
+30 days, saved maintenance only counts inside its own window and never longer than 72 hours, a required update turns into
+a suggestion when the store has nothing newer than the installed version, after three returns from the store on the same
+version, when Google Play reports no update, or when there is no store link. The app is never closed by App Control, and
+a debug build shows a "Test build" bar with a "Continue" button on every locking screen. The request carries no key
+header and no identifier of the user or device, it works when analytics is opted out, and it has its own small cache.
 
 ## Delivery and offline behaviour
 
@@ -194,15 +344,15 @@ deletes the saved settings with the rest of the SDK's data.
 | Android | minimum SDK 21 (Android 5.0), compile SDK 36 |
 | Language | Kotlin and Java, Java 11 language level |
 | Permissions | `INTERNET`, declared in the library manifest and merged into your app |
-| R8 / ProGuard | no consumer rules needed |
+| R8 / ProGuard | consumer rules ship with the library; they only silence warnings about optional libraries (AndroidX Fragment, Google Play In-App Updates) |
 | Dependencies | `pulse-core` and the Kotlin standard library |
 
 ## Opt-out
 
 `Pulse.optOut = true` (Java: `Pulse.setOptOut(true)`) is app-wide and remembered across restarts. It stops collection at
-once, clears queued signals, the user hash and the install id, and cancels active requests where possible. Requests already sent cannot
+once, clears queued signals, the user hash, the install id and a waiting crash file, and cancels active requests where possible. Requests already sent cannot
 be recalled. `Pulse.optOut = false` resumes collection. Before `initialize` the getter returns true, so do not write it
-back into a saved preference. If the stored choice cannot be read, the SDK counts as opted out.
+back into a saved preference. If the stored choice cannot be read, the SDK counts as opted out. Opting out does not switch App Control off: it sends nothing about the user and keeps its own cache; use `ControlMode.Off` for that.
 
 ## Licence
 

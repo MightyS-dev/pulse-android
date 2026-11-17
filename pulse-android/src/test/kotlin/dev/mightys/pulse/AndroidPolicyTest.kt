@@ -6,19 +6,19 @@ import org.junit.Test
 class AndroidPolicyTest {
     @Test fun twoStartedActivitiesDoNotFlushUntilLastStops() {
         var backgrounds = 0
-        val counter = ActivityCounter { backgrounds++ }
+        val counter = ActivityCounter(background = { backgrounds++ })
         counter.started(); counter.started(); counter.stopped(false)
         assertEquals(0, backgrounds); counter.stopped(false); assertEquals(1, backgrounds)
     }
     @Test fun stopOfActivityStartedBeforeRegistrationStillFlushes() {
         var backgrounds = 0
-        val counter = ActivityCounter { backgrounds++ }
+        val counter = ActivityCounter(background = { backgrounds++ })
         counter.stopped(true); assertEquals(0, backgrounds)
         counter.stopped(false); assertEquals(1, backgrounds)
     }
     @Test fun configurationChangeDoesNotCreateFalseBackground() {
         var backgrounds = 0
-        val counter = ActivityCounter { backgrounds++ }
+        val counter = ActivityCounter(background = { backgrounds++ })
         counter.started(); counter.stopped(true); counter.started()
         assertEquals(0, backgrounds); counter.stopped(false); assertEquals(1, backgrounds)
     }

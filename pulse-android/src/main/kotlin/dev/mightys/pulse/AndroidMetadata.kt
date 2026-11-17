@@ -51,6 +51,9 @@ internal object AndroidMetadata {
         context.packageManager.getApplicationLabel(context.applicationInfo).toString().takeIf { it.isNotBlank() }
     } catch (_: Exception) { null }
 
+    /** The package that installed the app (for example `com.android.vending`), or null. */
+    fun installerPackage(context: Context): String? = installer(context)
+
     @Suppress("DEPRECATION")
     private fun installer(context: Context): String? = try {
         if (Build.VERSION.SDK_INT >= 30) context.packageManager.getInstallSourceInfo(context.packageName).installingPackageName

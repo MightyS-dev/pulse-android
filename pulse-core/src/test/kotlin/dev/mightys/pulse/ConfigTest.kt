@@ -40,9 +40,9 @@ class ConfigTest {
         assertNull(RemoteSettings.parse(byteArrayOf(-1, -2, 0x7b)))
     }
 
-    @Test fun mappingCoversTheAllowlistOnceAndHasFortySixKeys() {
+    @Test fun mappingCoversTheAllowlistOnceAndHasFiftyOneKeys() {
         val all = RemoteSettings.GROUPS.values.flatten()
-        assertEquals(46, all.size); assertEquals(all.size, all.toSet().size)
+        assertEquals(51, all.size); assertEquals(all.size, all.toSet().size)
         assertTrue(all.containsAll(SystemKeys.EXTRA))
         assertFalse("bundleId" in all); assertTrue(all.none { it in SystemKeys.BASE || it in SystemKeys.IDENTITY })
     }

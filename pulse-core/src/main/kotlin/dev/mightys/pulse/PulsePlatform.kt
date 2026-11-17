@@ -31,6 +31,10 @@ public class PulseRequest @JvmOverloads constructor(
     /** True for the settings read: a body-less GET. */ public val isGet: Boolean = false,
     /** Entity tag to send as If-None-Match on a GET, when known. */ public val ifNoneMatch: String? = null,
     /** Stable id of this batch, sent as X-Pulse-Batch on every retry of the same batch. */ public val batchId: String? = null,
+    /** Content-Type of the body; null means application/json. Set for the heatmap screenshot upload (raw image bytes, never compressed). */
+    public val contentType: String? = null,
+    /** True for the App Control rules read: a body-less GET that carries no key and no other identity, with shorter time limits. */
+    public val control: Boolean = false,
 )
 /** Bounded HTTP response. Zero status indicates a network failure. */
 public class PulseResponse @JvmOverloads constructor(

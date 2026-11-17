@@ -16,7 +16,13 @@ internal data class Input(val timestamp: Long, val session: String, val userHash
     val previousStart: Long = 0, val previousEnd: Long = 0, val local: Map<String, String> = emptyMap(),
     val extra: Map<String, String>? = null,
     /** 0 for an ordinary signal, 1 for a screen view called by hand, 2 for one reported by an automatic hook. Judged when stored. */
-    val screen: Int = 0)
+    val screen: Int = 0,
+    /** The `error` object of a `pulse.error` signal; null for every other signal. */
+    val error: Map<String, Any?>? = null,
+    /** True for a screen view reported by an automatic hook; only those count against the per-session screen cap. */
+    val auto: Boolean = false,
+    /** The top-level `heatmap` object of a `pulse.heatmap` signal; null for every other signal. */
+    val heatmap: Map<String, Any?>? = null)
 
 internal object JsonWriter {
     fun validUnicode(value: String): Boolean {
@@ -89,6 +95,8 @@ internal object SignalJson {
         val value = linkedMapOf<String, Any?>("timestamp" to formatter.format(Date(input.timestamp)),
             "sessionId" to input.session, "type" to type, "debug" to debug, "system" to system,
             "props" to sanitize(input.props))
+        input.error?.let { value["error"] = it }
+        input.heatmap?.let { value["heatmap"] = it }
         input.value?.let { value["value"] = it }
         input.userHash?.let { value["userHash"] = it }
         return JsonWriter.value(value).toByteArray(Charsets.UTF_8).takeIf { it.size + 2 <= MAX_BODY }

@@ -14,15 +14,17 @@ internal class ScreenViewCallbacks(
     private val watchFragments: (Activity, (String) -> Unit) -> Unit = FragmentScreens::watch,
 ) : Application.ActivityLifecycleCallbacks {
     override fun onActivityCreated(activity: Activity, savedInstanceState: Bundle?) {
+        if (activity is PulseControlActivity) return
         if (fragmentsAvailable) try { watchFragments(activity, screen) } catch (_: Throwable) { /* Optional feature never breaks the app. */ }
     }
     override fun onActivityResumed(activity: Activity) {
-        if (alreadyReported(activity)) return
+        // The SDK's own App Control activity is never an app screen.
+        if (activity is PulseControlActivity || alreadyReported(activity)) return
         val name = activity.javaClass.simpleName
         if (name.isNotEmpty()) screen(name)
     }
     override fun onActivityStarted(activity: Activity) = Unit
-    override fun onActivityPaused(activity: Activity) = leaving(activity)
+    override fun onActivityPaused(activity: Activity) { if (activity !is PulseControlActivity) leaving(activity) }
     override fun onActivityStopped(activity: Activity) = Unit
     override fun onActivitySaveInstanceState(activity: Activity, outState: Bundle) = Unit
     override fun onActivityDestroyed(activity: Activity) = Unit

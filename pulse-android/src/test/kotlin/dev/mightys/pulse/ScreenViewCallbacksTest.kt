@@ -15,6 +15,16 @@ class ScreenViewCallbacksTest {
         assertEquals(listOf("HomeActivity", "SettingsActivity"), seen)
     }
 
+    @Test fun theSdksOwnControlActivityIsNeverAScreen() {
+        val seen = mutableListOf<String>(); var left = 0; var watched = 0
+        val callbacks = ScreenViewCallbacks({ seen.add(it) }, leaving = { left++ }, fragmentsAvailable = true, watchFragments = { _, _ -> watched++ })
+        callbacks.onActivityCreated(PulseControlActivity(), null)
+        callbacks.onActivityResumed(PulseControlActivity()); callbacks.onActivityPaused(PulseControlActivity())
+        assertTrue(seen.isEmpty()); assertEquals(0, left); assertEquals(0, watched)
+        callbacks.onActivityResumed(HomeActivity()); callbacks.onActivityPaused(HomeActivity())
+        assertEquals(listOf("HomeActivity"), seen); assertEquals(1, left)
+    }
+
     @Test fun anonymousActivityWithoutNameIsSkipped() {
         val seen = mutableListOf<String>()
         ScreenViewCallbacks({ seen.add(it) }, fragmentsAvailable = false).onActivityResumed(object : Activity() {})

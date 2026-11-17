@@ -27,13 +27,19 @@ internal class AndroidState(context: Context, private val execute: (Runnable) ->
     @Volatile private var snapshot: Map<String, String> = emptyMap()
     @Volatile private var connectionType: String? = null
     @Volatile private var lowPower: Boolean? = null
+    @Volatile private var notification: String? = null
+    @Volatile private var rationale: Boolean? = null
 
     override fun values(): Map<String, String> {
         val result = LinkedHashMap(snapshot)
         connectionType?.let { result["connectionType"] = it }
         lowPower?.let { result["lowPowerMode"] = it.toString() }
+        notification?.let { result["notificationPermission"] = it }
         return result
     }
+
+    /** An Activity started: remember whether the system would show the permission rationale (a read, never a request). */
+    fun noteActivity(activity: android.app.Activity) { rationale = NotificationStatus.rationale(activity) }
 
     /** Register notifications and read the first values. Call on the SDK worker. */
     fun start() {
@@ -50,6 +56,7 @@ internal class AndroidState(context: Context, private val execute: (Runnable) ->
     /** Re-read configuration, display and accessibility settings. Call on the SDK worker. */
     fun refresh() {
         try { snapshot = DynamicFields.fields(read()) } catch (_: Exception) { /* keep the previous values */ }
+        notification = NotificationStatus.read(app, rationale)
         if (Build.VERSION.SDK_INT < 24) readConnectionOnce()
     }
 

@@ -24,6 +24,14 @@ public data class PulseOptions @JvmOverloads constructor(
     public val automaticScreenViews: Boolean = true,
     /** Send `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. Set false to send none of them. The portal can switch them off, never on. */
     public val automaticSignals: Boolean = true,
+    /** Catch unhandled errors and crashes and send them as `pulse.error`. Set false to install no handler at all. `Pulse.trackError` still works. */
+    public val captureErrors: Boolean = true,
+    /** `FULL` sends type, filtered message and frames; `TYPE_ONLY` sends the type alone. */
+    public val errorDetail: ErrorDetail = ErrorDetail.FULL,
+    /** Follow the portal for heatmaps of taps (`pulse.heatmap`). Heatmaps are off until the owner switches them on in the portal; false turns them off for good, true never forces them on over the portal. */
+    public val captureHeatmaps: Boolean = true,
+    /** App Control: [ControlMode.Automatic] (the default) shows the update, block and maintenance screens set in the portal, [ControlMode.Manual] only keeps the state up to date, [ControlMode.Off] makes no request at all. */
+    public val control: ControlMode = ControlMode.Automatic,
 ) {
     internal fun normalized(): PulseOptions = copy(
         host = host ?: PulseInfo.DEFAULT_HOST,

@@ -3,11 +3,13 @@ kotlin = "2.2.20"
 agp = "8.11.1"
 junit = "4.13.2"
 fragment = "1.8.5"
-pulse = "0.9.5"
+playAppUpdate = "2.1.0"
+pulse = "0.9.7"
 [libraries]
 kotlin-stdlib = { module = "org.jetbrains.kotlin:kotlin-stdlib", version.ref = "kotlin" }
 junit = { module = "junit:junit", version.ref = "junit" }
 androidx-fragment = { module = "androidx.fragment:fragment", version.ref = "fragment" }
+play-app-update = { module = "com.google.android.play:app-update", version.ref = "playAppUpdate" }
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }

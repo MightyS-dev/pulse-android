@@ -11,7 +11,8 @@ internal object SystemKeys {
         "screenWidth", "screenHeight", "screenScale", "screenWidthPx", "screenHeightPx", "screenDpi", "screenCount",
         "orientation", "colorScheme", "layoutDirection", "timeZone", "utcOffsetMinutes", "language", "preferredLanguage",
         "region", "fontScale", "reduceMotion", "boldText", "invertColors", "increaseContrast", "reduceTransparency",
-        "differentiateWithoutColor", "fontWeightAdjustment", "connectionType", "lowPowerMode",
+        "differentiateWithoutColor", "fontWeightAdjustment", "connectionType", "lowPowerMode", "notificationPermission",
+        "trackingPermission",
     )
     const val MAX_EXTRA_LENGTH = 64
 }

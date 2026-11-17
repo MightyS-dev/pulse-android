@@ -4,6 +4,41 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.7] - 2026-11-16
+
+- The built-in update and maintenance screens are not counted as app screens or taps.
+- App Control: after `Pulse.initialize` the app can show a required update, a suggested update, a blocked version,
+  maintenance (also scheduled, applied by the device clock), an announcement or a what's new card, as set in the portal.
+  No extra code is needed (`ControlMode.Automatic`); `ControlMode.Manual` keeps `Pulse.control.state` up to date and
+  draws nothing; `ControlMode.Off` makes no request. `Pulse.control` has `state`, `addListener`, `removeListener`,
+  `checkNow()`, `openStore()` and `dismiss()`. Built-in screens in 12 languages, light and dark, with the text size and
+  TalkBack respected, Back never closes a locking screen. Google Play In-App Updates is used only when the app already has
+  it. Fails open: the check takes at most 5 seconds, never delays `initialize`, is never retried in a loop, and any error
+  keeps the last known state or normal. New option `control`. The library manifest declares one internal Activity.
+- Errors and crashes with where they happened: unhandled exceptions are sent as `pulse.error` with the error type, a
+  filtered message and readable frames (class, method, file and line, with `Caused by` frames for the cause chain). A
+  crash is saved to a small file and sent on the next launch. `Pulse.trackError(error, props)` sends errors you handle
+  yourself. Emails, URLs' query strings, UUIDs, IP addresses, long digit runs and file paths are filtered on the device.
+  New options `captureErrors` (default true; false installs no handler) and `errorDetail` (`TYPE_ONLY` sends the type
+  alone). At most 10 per session and error type.
+- A crash right after start is now kept and sent on the next launch.
+- New automatic data: `pulse.deep_link` (scheme, host and a path without ids, plus the three utm_ tags), `pulse.permission_changed`
+  (notifications), `pulse.app_opened` and `pulse.app_backgrounded` (only when the portal switches them on), and the system
+  fields `launchMs`, `foregroundsToday`, `previousForegroundSeconds` and `notificationPermission`. `Pulse.deepLink(uri)` reports
+  a link by hand. The portal can pause types (`pausedSignals`). Guards: per session and type caps, 300 automatic signals per
+  day, dropped ones counted once as `droppedAutomatic`.
+- Why the app ended (Android 11+): ANR, native crash, low memory and similar exits from the system's exit history are sent
+  once each as `pulse.error` with kind `exit` (at most 10 per launch, none older than 7 days).
+- Heatmaps of taps. Off until the portal switches `heatmaps` on for the app. The SDK sends `pulse.heatmap` with the screen
+  name, the position (x as a fraction of the window width, y in dp from the top) and the kind (`tap`, `rage`), at most 200
+  points per signal and 1000 per session; it is not counted by the automatic signal guards. Never captured: the soft keyboard,
+  `EditText` and other text editors, password fields, `WebView`, and any view marked with `Pulse.heatmapIgnore(view)`. No text,
+  ids or class names. New option `captureHeatmaps` (default true follows the portal; false never captures). In a debuggable
+  build only, one screenshot per screen, window shape and app version is taken (API 26+) and uploaded; release builds never
+  send a picture.
+- Fixed: a `pulse.session_started` (or `pulse.new_install`, `pulse.app_updated`) opened by an error signal no longer carries a
+  copy of that error object.
+
 ## [0.9.5] - 2026-11-16
 
 - A batch that is sent again after a lost answer is stored only once.

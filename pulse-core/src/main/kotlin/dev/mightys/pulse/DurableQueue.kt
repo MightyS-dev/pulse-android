@@ -38,6 +38,9 @@ internal class CaptureState {
     /** Time of the latest capture, or zero before the first capture. */
     val lastSeen: Long get() = if (lastActivity == Long.MIN_VALUE) 0L else lastActivity
 
+    /** The session an event at [at] would join, or null when it would open a new one. */
+    fun sessionAt(at: Long): String? = if (lastActivity == Long.MIN_VALUE || at - lastActivity >= 1800000) null else session
+
     fun setUser(identifier: String?) { userHash = identifier?.takeIf { it.isNotEmpty() }?.let(Hash::hex) }
     fun capture(at: Long, type: String?, value: Double?, props: Map<String, Any?>, local: Map<String, String> = emptyMap(),
         extra: Map<String, String>? = null): Input {
