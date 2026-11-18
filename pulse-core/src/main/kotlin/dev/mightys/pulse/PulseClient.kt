@@ -467,7 +467,7 @@ public class PulseClient @JvmOverloads constructor(
         if (type in settings.pausedSignals) return false
         if (type == RemoteSettings.SCREEN_VIEW) return portalAllowsScreenViews()
         if (type in RemoteSettings.AUTOMATIC_TYPES) {
-            // The two opt-in types need the portal to list them; no cached settings means they stay off.
+            // Opt-in types need the portal to list them; no cached settings means they stay off.
             if (type in AutoSignals.OPT_IN && type !in settings.enabledSignals) return false
             return automaticSignals && options.automaticSignals && settings.automaticSignals && type !in settings.disabledSignals
         }
@@ -586,7 +586,7 @@ public class PulseClient @JvmOverloads constructor(
         enqueue { foregrounded(at, capturedRevision) }
     }
 
-    /** The app went to the background (the last Activity stopped). Sends `pulse.app_backgrounded` when the portal switched it on. */
+    /** The app went to the background (ProcessLifecycle ON_STOP). Saves the session end, records the signal and requests a flush. */
     public fun appBackgrounded() {
         if (privacy.get() == 2) return
         val at = clock.nowMillis(); val capturedRevision = revision.get()
@@ -608,11 +608,16 @@ public class PulseClient @JvmOverloads constructor(
         val start = foregroundStart ?: return
         foregroundStart = null
         val seconds = ((at - start) / 1000).coerceAtLeast(0)
+        // Persist the real end before trying the signal, even when the type is disabled or its cap was reached.
+        // This must not move the last signal time used by the 30 minute inactivity rule.
+        capture.backgrounded(at)
+        touchUsage()
         // The signal shows the previous period in previousForegroundSeconds; this period is stored after it.
         // Idle for 30 minutes or more: the session has ended, and a background event alone must not open a new one. It is dropped.
         if (capture.sessionAt(at) != null) capture(at, AutoSignals.APP_BACKGROUNDED, null, PropertyCopy(mapOf("foregroundSeconds" to seconds), false), capturedRevision)
         foreground = (foreground ?: loadForeground()).backgrounded(seconds)
         persistForeground()
+        background()
     }
 
     /**
@@ -727,7 +732,7 @@ public class PulseClient @JvmOverloads constructor(
     private fun touchUsage() {
         val current = usage ?: return
         if (current.openStart != capture.sessionStart) return
-        val next = current.touched(capture.lastSeen)
+        val next = current.touched(capture.sessionEnd)
         if (next !== current) { usage = next; persistUsage() }
     }
 

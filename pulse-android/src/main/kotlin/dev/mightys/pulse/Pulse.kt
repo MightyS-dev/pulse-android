@@ -70,9 +70,8 @@ public object Pulse {
                         val callbacks = PulseLifecycle(client) { activity -> state.noteActivity(activity); scheduler.execute(Runnable { state.refresh() }) }
                         applicationContext.registerActivityLifecycleCallbacks(callbacks)
                         lifecycle = callbacks
+                        mainHandler.post { safely { callbacks.observe(androidx.lifecycle.ProcessLifecycleOwner.get().lifecycle) } }
                     }
-                    // Initialized from a visible Activity whose start already happened: that is the foreground (repeats are ignored).
-                    if (context is android.app.Activity && !context.isFinishing) client.appForegrounded()
                 }
             })
         }

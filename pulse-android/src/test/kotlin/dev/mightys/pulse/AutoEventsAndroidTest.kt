@@ -2,40 +2,67 @@ package dev.mightys.pulse
 
 import android.app.Activity
 import android.app.ApplicationExitInfo
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import org.junit.Assert.*
 import org.junit.Test
 import java.util.ArrayDeque
 
 class AutoEventsAndroidTest {
-    // ---- foreground and background from the activity counter ----
+    // ---- foreground and background from the process lifecycle ----
 
-    @Test fun firstStartedActivityIsTheOnlyForegroundAndLastStopIsTheBackground() {
-        val log = mutableListOf<String>()
-        val counter = ActivityCounter({ log.add("back") }, { log.add("front") })
-        counter.started(); counter.started(); counter.stopped(false); counter.stopped(false)
-        assertEquals(listOf("front", "back"), log)
+    internal class Owner : LifecycleOwner {
+        override val lifecycle: LifecycleRegistry = LifecycleRegistry.createUnsafe(this)
     }
 
-    @Test fun configurationChangeNeitherBackgroundsNorForegroundsAgain() {
-        val log = mutableListOf<String>(); var now = 0L
-        val counter = ActivityCounter({ log.add("back") }, { log.add("front") }, { now })
-        counter.started(); counter.stopped(true); now += 300; counter.started()
-        assertEquals(listOf("front"), log)
-        counter.stopped(false); assertEquals(listOf("front", "back"), log)
+    internal class LifecycleRun {
+        var now = 1_800_000_000_000L
+        val queue = Queue()
+        val bodies = mutableListOf<String>()
+        val owner = Owner()
+        val client = PulseClient(clock = PulseClock { now }, scheduler = queue, transport = PulseTransport { request, done ->
+            if (!request.isGet) bodies.add(String(request.body))
+            done(PulseResponse(if (request.isGet) 404 else 202)); PulseCancellation {}
+        })
+        val hook = PulseLifecycle(client)
+        init {
+            client.initialize("key", PulseOptions(gzip = false), Memory(), PulseEnvironment { mapOf("platform" to "mobile") })
+            queue.drain(); hook.observe(owner.lifecycle)
+        }
+        fun event(event: Lifecycle.Event) { owner.lifecycle.handleLifecycleEvent(event); queue.drain() }
+        fun count(type: String) = Regex("\"type\":\"$type\"").findAll(bodies.joinToString()).count()
     }
 
-    @Test fun aStaleConfigurationChangeFlagDoesNotSwallowARealForeground() {
-        val log = mutableListOf<String>(); var now = 0L
-        val counter = ActivityCounter({ log.add("back") }, { log.add("front") }, { now })
-        counter.started(); counter.stopped(true); now += 60_000; counter.started()
-        assertEquals(listOf("front", "front"), log)
+    @Test fun processOnStopSendsOneBackgroundWithSessionSecondsAndFlushes() {
+        val h = LifecycleRun(); h.event(Lifecycle.Event.ON_START); h.now += 60_000
+        h.event(Lifecycle.Event.ON_STOP); h.event(Lifecycle.Event.ON_STOP)
+        assertEquals(1, h.count("pulse.app_backgrounded"))
+        assertTrue(h.bodies.joinToString().contains("\"sessionSeconds\":\"60\""))
+        assertEquals(0, h.count("pulse.app_opened"))
     }
 
-    @Test fun backgroundThenForegroundAgainFiresBothAgain() {
-        val log = mutableListOf<String>()
-        val counter = ActivityCounter({ log.add("back") }, { log.add("front") })
-        counter.started(); counter.stopped(false); counter.started(); counter.stopped(false)
-        assertEquals(listOf("front", "back", "front", "back"), log)
+    @Test fun activityStopsAndConfigurationChangesDoNotReplaceProcessOnStop() {
+        val h = LifecycleRun(); h.event(Lifecycle.Event.ON_START)
+        h.hook.onActivityStarted(Activity()); h.hook.onActivityStarted(Activity())
+        h.hook.onActivityStopped(Activity()); h.hook.onActivityStopped(Activity()); h.queue.drain()
+        assertEquals(0, h.count("pulse.app_backgrounded"))
+        h.event(Lifecycle.Event.ON_STOP)
+        assertEquals(1, h.count("pulse.app_backgrounded"))
+    }
+
+    @Test fun observingAnAlreadyStartedProcessCapturesItsNextBackground() {
+        val h = LifecycleRun()
+        h.owner.lifecycle.removeObserver(h.hook)
+        h.event(Lifecycle.Event.ON_START); h.hook.observe(h.owner.lifecycle); h.queue.drain()
+        h.now += 1000; h.event(Lifecycle.Event.ON_STOP)
+        assertEquals(1, h.count("pulse.app_backgrounded"))
+    }
+
+    @Test fun backgroundThenForegroundAgainFiresOncePerProcessTransition() {
+        val h = LifecycleRun()
+        repeat(2) { h.event(Lifecycle.Event.ON_START); h.now += 1000; h.event(Lifecycle.Event.ON_STOP) }
+        assertEquals(2, h.count("pulse.app_backgrounded"))
     }
 
     // ---- launch timer ----
@@ -174,7 +201,7 @@ class AutoEventsAndroidTest {
 
     // ---- end to end with a real client: fixtures through the hook, marker means no duplicates ----
 
-    private class Queue : PulseScheduler {
+    internal class Queue : PulseScheduler {
         val work = ArrayDeque<Runnable>()
         override fun execute(action: Runnable) { work.add(action) }
         override fun schedule(delayMillis: Long, action: Runnable): PulseCancellation = PulseCancellation {}

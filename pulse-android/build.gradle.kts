@@ -22,6 +22,7 @@ kotlin {
 dependencies {
     api(libs.kotlin.stdlib) { exclude(group = "org.jetbrains", module = "annotations") }
     api(project(":pulse-core"))
+    implementation(libs.androidx.lifecycle.process)
     compileOnly(libs.androidx.fragment)
     // Play In-App Updates is optional: used only when the app already has it (checked by class name at runtime).
     compileOnly(libs.play.app.update)

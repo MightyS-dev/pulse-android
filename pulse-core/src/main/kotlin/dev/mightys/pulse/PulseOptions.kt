@@ -22,7 +22,7 @@ public data class PulseOptions @JvmOverloads constructor(
     public val appVersion: String? = null,
     /** Send `pulse.screen_view` automatically when an Activity (or AndroidX fragment) is shown. Set false to send no automatic screen views. Manual `screen()` calls still send. The portal can switch screen views off, never on. */
     public val automaticScreenViews: Boolean = true,
-    /** Send `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. Set false to send none of them. The portal can switch them off, never on. */
+    /** Allow automatic signals, including default-on `pulse.app_backgrounded`. Set false to switch automatic signals off. The portal can switch them off, never on. */
     public val automaticSignals: Boolean = true,
     /** Catch unhandled errors and crashes and send them as `pulse.error`. Set false to install no handler at all. `Pulse.trackError` still works. */
     public val captureErrors: Boolean = true,

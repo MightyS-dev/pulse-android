@@ -29,7 +29,7 @@ internal object AutoSignals {
     const val EXIT_MAX_AGE_MILLIS = 7L * 86_400_000L
     const val EXIT_MAX_FUTURE_MILLIS = 86_400_000L
     const val MAX_LAUNCH_MS = 3_600_000L
-    val OPT_IN = setOf(APP_OPENED, APP_BACKGROUNDED)
+    val OPT_IN = setOf(APP_OPENED)
     val SESSION_CAPS = mapOf(APP_OPENED to 20, APP_BACKGROUNDED to 20, DEEP_LINK to 10, PERMISSION_CHANGED to 5, RemoteSettings.SCREEN_VIEW to 100)
     /** System key to the permission name used in `pulse.permission_changed`. */
     val PERMISSIONS = linkedMapOf("notificationPermission" to "notification", "trackingPermission" to "tracking")

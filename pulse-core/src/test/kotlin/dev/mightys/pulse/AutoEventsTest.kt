@@ -32,11 +32,11 @@ class AutoEventsTest {
         assertTrue(none.enabledSignals.isEmpty()); assertTrue(none.pausedSignals.isEmpty())
     }
 
-    // ---- opt-in app_opened and app_backgrounded ----
+    // ---- opt-in app_opened and default-on app_backgrounded ----
 
-    @Test fun optInTypesAreNotSentWithoutACachedConfig() {
+    @Test fun backgroundIsOnByDefaultButAppOpenedStaysOptIn() {
         val h = harness(); cycle(h); h.flush()
-        assertTrue(named(h, "pulse.app_opened").isEmpty()); assertTrue(named(h, "pulse.app_backgrounded").isEmpty())
+        assertTrue(named(h, "pulse.app_opened").isEmpty()); assertEquals(1, named(h, "pulse.app_backgrounded").size)
     }
 
     @Test fun optInTypesAreNotSentWhenTheConfigReadFailsOrIsDamaged() {
@@ -65,9 +65,9 @@ class AutoEventsTest {
         assertEquals("1860", system(named(h, "pulse.app_backgrounded").single())["previousForegroundSeconds"])
     }
 
-    @Test fun aSingleTypeCanBeEnabledAlone() {
+    @Test fun enablingAppOpenedKeepsBackgroundOn() {
         val h = harness(enabled("pulse.app_opened")); cycle(h); h.flush()
-        assertEquals(1, named(h, "pulse.app_opened").size); assertTrue(named(h, "pulse.app_backgrounded").isEmpty())
+        assertEquals(1, named(h, "pulse.app_opened").size); assertEquals(1, named(h, "pulse.app_backgrounded").size)
     }
 
     @Test fun coldStartIsTrueOnlyForTheFirstForegroundOfTheProcess() {
@@ -130,6 +130,103 @@ class AutoEventsTest {
         storage.files["config"] = """{"enabledSignals":["pulse.app_opened"]}""".toByteArray()
         val second = harness(storage); cycle(second); second.flush()
         assertEquals(1, named(second, "pulse.app_opened").size)
+    }
+
+    @Test fun backgroundSendsOnceWithSessionAndForegroundSecondsAndFlushesImmediately() {
+        val h = harness(); h.client.appForegrounded(); h.settle(); h.send("start")
+        h.clock.time += 60_000
+        val requests = h.transport.requests.size
+        h.client.appBackgrounded(); h.client.appBackgrounded(); h.settle()
+        assertEquals(requests + 1, h.transport.requests.size)
+        val back = named(h, "pulse.app_backgrounded").single()
+        assertEquals("60", system(back)["sessionSeconds"])
+        assertEquals("60", (props(back)["foregroundSeconds"] as JsonNumber).text)
+        assertEquals(h.events.single()["sessionId"], back["sessionId"])
+    }
+
+    @Test fun endIsPersistedBeforeTheBackgroundSignalAndSurvivesItsLoss() {
+        val storage = FakeStorage(); val clock = FakeClock(); val h = harness(storage, clock)
+        h.client.appForegrounded(); h.settle(); h.send("start")
+        val start = clock.time
+        clock.time += 120_000
+        var endAtSend: Long? = null
+        h.transport.handler = { _, done ->
+            endAtSend = UsageStats.decode(storage.files["usage"]!!)!!.openLast
+            done(PulseResponse(202))
+        }
+        h.client.appBackgrounded(); h.settle()
+        assertEquals(clock.time, endAtSend)
+        assertEquals(clock.time, UsageStats.decode(storage.files["usage"]!!)!!.openLast)
+        // No queued signal survives this acknowledged send. The session end must survive on its own.
+        clock.time += 10_000
+        val next = harness(storage, clock); next.send("next")
+        assertEquals("120", system(next.events.single())["previousSessionSeconds"])
+        assertEquals(start + 120_000, endAtSend)
+    }
+
+    @Test fun failedBackgroundFlushIsReplayedAtNextLaunchWithTheOriginalTimestamp() {
+        val storage = FakeStorage(); val clock = FakeClock(); val h = harness(storage, clock)
+        h.client.appForegrounded(); h.settle(); h.send("start"); clock.time += 60_000
+        h.transport.handler = { _, done -> done(PulseResponse(503)) }
+        h.client.appBackgrounded(); h.settle()
+        val original = named(h, "pulse.app_backgrounded").single()
+        val snapshot = Snapshot.decode(storage.files[storage.queueName]!!)!!
+        assertEquals(1, snapshot.entries.size); assertEquals(1, snapshot.pending.size)
+        clock.time += 10_000
+        val next = harness(storage, clock); next.send("next")
+        assertEquals(original, named(next, "pulse.app_backgrounded").single())
+        assertEquals("60", system(next.events.single())["previousSessionSeconds"])
+    }
+
+    @Test fun disabledOrPausedBackgroundStillPersistsTheRealEnd() {
+        for (key in listOf("disabledSignals", "pausedSignals")) {
+            val storage = config("""{"enabledSignals":["pulse.app_backgrounded"],"$key":["pulse.app_backgrounded"]}""")
+            val clock = FakeClock(); val h = harness(storage, clock)
+            h.client.appForegrounded(); h.settle(); h.send("start"); clock.time += 90_000
+            h.client.appBackgrounded(); h.settle()
+            assertTrue(named(h, "pulse.app_backgrounded").isEmpty())
+            assertEquals(clock.time, UsageStats.decode(storage.files["usage"]!!)!!.openLast)
+            clock.time += 1000
+            val next = harness(storage, clock); next.send("next")
+            assertEquals("90", system(next.events.single())["previousSessionSeconds"])
+        }
+    }
+
+    @Test fun disabledBackgroundEndIsAlsoUsedByTheNextSessionInTheSameProcess() {
+        val h = harness(config("""{"disabledSignals":["pulse.app_backgrounded"]}"""))
+        h.client.appForegrounded(); h.settle(); h.send("start"); h.clock.time += 75_000
+        h.client.appBackgrounded(); h.settle(); h.clock.time += 1_800_000
+        h.send("next")
+        assertEquals("75", system(h.events.last())["previousSessionSeconds"])
+    }
+
+    @Test fun backgroundAtTheIdleBoundaryIsDroppedWithoutOpeningOrExtendingTheSession() {
+        for (delay in listOf(1_800_000L, 1_800_001L)) {
+            val h = harness(); h.client.appForegrounded(); h.settle(); h.send("start")
+            h.clock.time += delay; h.client.appBackgrounded(); h.settle()
+            assertTrue(named(h, "pulse.app_backgrounded").isEmpty())
+            assertEquals(1, named(h, "pulse.session_started").size)
+            h.send("next")
+            assertEquals(2, named(h, "pulse.session_started").size)
+            assertNotEquals(h.events.first()["sessionId"], h.events.last()["sessionId"])
+        }
+    }
+
+    @Test fun backgroundJustBeforeTheIdleBoundaryIsSentInTheExistingSession() {
+        val h = harness(); h.client.appForegrounded(); h.settle(); h.send("start")
+        h.clock.time += 1_799_999; h.client.appBackgrounded(); h.settle()
+        val back = named(h, "pulse.app_backgrounded").single()
+        assertEquals("1799", system(back)["sessionSeconds"])
+        assertEquals(1, named(h, "pulse.session_started").size)
+    }
+
+    @Test fun defaultBackgroundCapIsTwentyAndTheTwentyFirstStillMovesTheStoredEnd() {
+        val storage = FakeStorage(); val h = harness(storage)
+        repeat(21) { cycle(h, 1) }
+        assertEquals(20, named(h, "pulse.app_backgrounded").size)
+        assertEquals(h.clock.time, UsageStats.decode(storage.files["usage"]!!)!!.openLast)
+        h.clock.time += 1_800_000; cycle(h, 1)
+        assertEquals(21, named(h, "pulse.app_backgrounded").size)
     }
 
     // ---- foreground counters, launchMs ----

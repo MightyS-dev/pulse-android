@@ -4,6 +4,11 @@ All notable changes to this project are documented in this file. The format foll
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.8] - 2026-11-18
+
+- Session length: the SDK reports when the app goes to the background, so sessions show their real length. `pulse.app_backgrounded` is on by default and does not count toward your plan.
+- `pulse-android` now depends on `androidx.lifecycle:lifecycle-process` 2.8.7 to detect when the app goes to the background. Apps must use AndroidX (`android.useAndroidX=true`, the default for new projects).
+
 ## [0.9.7] - 2026-11-16
 
 - The built-in update and maintenance screens are not counted as app screens or taps.

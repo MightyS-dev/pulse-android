@@ -1,26 +1,32 @@
 package dev.mightys.pulse
 
+import android.app.Activity
+import androidx.lifecycle.Lifecycle
 import org.junit.Assert.*
 import org.junit.Test
 
 class AndroidPolicyTest {
-    @Test fun twoStartedActivitiesDoNotFlushUntilLastStops() {
-        var backgrounds = 0
-        val counter = ActivityCounter(background = { backgrounds++ })
-        counter.started(); counter.started(); counter.stopped(false)
-        assertEquals(0, backgrounds); counter.stopped(false); assertEquals(1, backgrounds)
+    @Test fun activityStartsStillRefreshMetadataWithoutSendingBackground() {
+        val h = AutoEventsAndroidTest.LifecycleRun(); var refreshes = 0
+        val hook = PulseLifecycle(h.client) { refreshes++ }
+        hook.onActivityStarted(Activity()); hook.onActivityStarted(Activity()); hook.onActivityStopped(Activity())
+        h.queue.drain()
+        assertEquals(2, refreshes); assertEquals(0, h.count("pulse.app_backgrounded"))
     }
-    @Test fun stopOfActivityStartedBeforeRegistrationStillFlushes() {
-        var backgrounds = 0
-        val counter = ActivityCounter(background = { backgrounds++ })
-        counter.stopped(true); assertEquals(0, backgrounds)
-        counter.stopped(false); assertEquals(1, backgrounds)
+    @Test fun processPauseDoesNotFlushUntilOnStop() {
+        val h = AutoEventsAndroidTest.LifecycleRun()
+        h.event(Lifecycle.Event.ON_RESUME); h.now += 1000; h.event(Lifecycle.Event.ON_PAUSE)
+        assertEquals(0, h.count("pulse.app_backgrounded"))
+        h.event(Lifecycle.Event.ON_STOP); assertEquals(1, h.count("pulse.app_backgrounded"))
     }
-    @Test fun configurationChangeDoesNotCreateFalseBackground() {
-        var backgrounds = 0
-        val counter = ActivityCounter(background = { backgrounds++ })
-        counter.started(); counter.stopped(true); counter.started()
-        assertEquals(0, backgrounds); counter.stopped(false); assertEquals(1, backgrounds)
+    @Test fun observingAnAlreadyStoppedProcessDoesNotFabricateBackground() {
+        val h = AutoEventsAndroidTest.LifecycleRun()
+        h.owner.lifecycle.removeObserver(h.hook)
+        h.event(Lifecycle.Event.ON_START); h.event(Lifecycle.Event.ON_STOP)
+        h.hook.observe(h.owner.lifecycle); h.queue.drain()
+        assertEquals(0, h.count("pulse.app_backgrounded"))
+        h.event(Lifecycle.Event.ON_START); h.now += 1000; h.event(Lifecycle.Event.ON_STOP)
+        assertEquals(1, h.count("pulse.app_backgrounded"))
     }
     @Test fun osVersionIsNumericAndNeverContainsBuildDescriptions() {
         assertEquals("16", AndroidMetadata.numericRelease("16"))

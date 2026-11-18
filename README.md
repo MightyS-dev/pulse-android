@@ -15,14 +15,14 @@ fingerprinting. It is written in Kotlin and works from Kotlin and Java.
 ```kotlin
 // build.gradle.kts (app module)
 dependencies {
-    implementation("dev.mightys:pulse-android:0.9.7")
+    implementation("dev.mightys:pulse-android:0.9.8")
 }
 ```
 
 ```groovy
 // build.gradle (app module)
 dependencies {
-    implementation "dev.mightys:pulse-android:0.9.7"
+    implementation "dev.mightys:pulse-android:0.9.8"
 }
 ```
 
@@ -65,6 +65,13 @@ Pulse.flush(() -> { /* runs on the SDK worker */ });
 
 Initialization is ignored after the first successful call. Public calls never throw into your app and never block the
 main thread. Hashing, disk work and sending run on background threads.
+
+## See your first signal
+
+1. Sign in at [app.pulse.mightys.dev](https://app.pulse.mightys.dev) and open the app whose key you used.
+2. A debug or development build sends test data (see Test mode below). Turn on the **Test mode** switch in the bar
+   above the figures to see it; turn it off again for real users.
+3. Open **Live** in the app menu: signals appear there as they arrive. The Overview and the other screens follow shortly.
 
 ## What is sent and what is never sent
 
@@ -111,8 +118,27 @@ Types the SDK can send by itself: `pulse.session_started`, `pulse.new_install`, 
 `pulse.permission_changed`, `pulse.deep_link`, `pulse.app_opened`, `pulse.app_backgrounded` and `pulse.heatmap`. Switch them off in code with
 `PulseOptions(automaticSignals = false)` (all of them), `automaticScreenViews = false` (screen views) and
 `captureErrors = false` (crash capture and the exit reasons below) and `captureHeatmaps = false` (`pulse.heatmap`, see Heatmaps below); `Pulse.optOut = true` stops everything. The portal can
-switch each type off, `pulse.app_opened` and `pulse.app_backgrounded` are sent only when the portal turns them on, and `pulse.heatmap` only when the portal switches heatmaps on.
+switch each type off, `pulse.app_opened` is sent only when the portal turns it on, and `pulse.heatmap` only when the portal switches heatmaps on.
 Defaults and how many signals each type uses: https://pulse.mightys.dev/docs/automatic-signals/
+
+| Signal | Default | Plan usage |
+| --- | --- | --- |
+| `pulse.session_started` | On | Free automatic signal |
+| `pulse.app_opened` | Off, opt in through the portal | Free automatic signal |
+| `pulse.app_backgrounded` | On | Free automatic signal |
+| `pulse.new_install` | On | Free automatic signal |
+| `pulse.app_updated` | On | Free automatic signal |
+| `pulse.screen_view` | On | Counts toward your plan |
+| `pulse.permission_changed` | On | Counts toward your plan |
+| `pulse.deep_link` | On | Counts toward your plan |
+| `pulse.heatmap` | Off, enabled through the portal | Counts toward your plan |
+
+The five lifecycle types marked free do not count toward your plan.
+When the app goes to the background, the SDK saves the session end, sends `pulse.app_backgrounded` with
+`foregroundSeconds` and the system field `sessionSeconds`, then requests a flush. An unfinished send stays on disk
+with its original timestamp for the next launch. At most 20 background signals are sent per session; a background
+30 minutes or more after the last signal is dropped and never opens a session. The saved end still lets the next
+session report the real `previousSessionSeconds`.
 
 What the new ones carry: `pulse.app_opened` has `coldStart`, `pulse.app_backgrounded` has `foregroundSeconds`,
 `pulse.deep_link` has `scheme`, `host`, `path` (numeric and uuid-like segments become `:id`, at most 128 characters) and
@@ -241,7 +267,7 @@ Pulse.initialize(this, "YOUR_APP_KEY", PulseOptions(
 | `sendAppIdentity` | false | Adds the first signing certificate SHA-256 (the package name is always sent as `bundleId`). |
 | `appVersion` | package version name | Overrides the app version. |
 | `automaticScreenViews` | true | Sends `pulse.screen_view` when an Activity or AndroidX fragment is shown. False sends no automatic screen views. |
-| `automaticSignals` | true | Sends `pulse.session_started`, `pulse.new_install` and `pulse.app_updated`. False sends none of them. |
+| `automaticSignals` | true | Allows automatic signals, including `pulse.app_backgrounded` (on by default). False switches automatic signals off. |
 | `captureErrors` | true | Catches unhandled errors and crashes and sends them as `pulse.error`. False installs no handler at all. |
 | `errorDetail` | `ErrorDetail.FULL` | `FULL` sends type, filtered message and frames. `TYPE_ONLY` sends the error type alone. |
 | `captureHeatmaps` | true | True follows the portal (heatmaps are off until it switches them on); false never captures taps. See Heatmaps. |
@@ -322,7 +348,7 @@ header and no identifier of the user or device, it works when analytics is opted
 ## Delivery and offline behaviour
 
 - The first batch after `initialize` is sent at once. Later batches follow the interval, the batch size, an explicit
-  flush, or the last started Activity stopping.
+  flush, or ProcessLifecycle ON_STOP after the last Activity stops.
 - Signals are saved to a checksummed file under `noBackupFilesDir/mightys-pulse` and survive restarts. One process must
   own that directory; multiprocess writers are not supported.
 - Network errors and server errors (408, 425, 429, 5xx) are retried with exponential backoff from 1 second to 5 minutes.
@@ -345,7 +371,7 @@ header and no identifier of the user or device, it works when analytics is opted
 | Language | Kotlin and Java, Java 11 language level |
 | Permissions | `INTERNET`, declared in the library manifest and merged into your app |
 | R8 / ProGuard | consumer rules ship with the library; they only silence warnings about optional libraries (AndroidX Fragment, Google Play In-App Updates) |
-| Dependencies | `pulse-core` and the Kotlin standard library |
+| Dependencies | `pulse-core`, the Kotlin standard library and AndroidX Lifecycle Process |
 
 ## Opt-out
 

@@ -14,7 +14,7 @@ class ControlStateBuilderTest {
     private fun required(custom: String = "{}", url: String = "null") =
         rules("""{$base,"update":{"android":{"min":"9.0.0","latest":null,"mode":"required","storeVersion":null,"storeUrl":$url}},"maintenance":null,"texts":{"custom":$custom}}""")
     private fun outcome(rules: ControlRules, version: String = "2.3.0", debug: Boolean = false) =
-        ControlDecision.decide(ControlInput(rules, now, "android", version, debug, "pulse-android@0.9.7"))
+        ControlDecision.decide(ControlInput(rules, now, "android", version, debug, PulseInfo.SDK_NAME + "@" + PulseInfo.VERSION))
 
     @Test fun builtInTextsFillTheAppNameAndFollowTheLanguage() {
         val r = required()

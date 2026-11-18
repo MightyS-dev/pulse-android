@@ -35,11 +35,17 @@ internal class CaptureState {
     /** Start of the current session, or zero before the first capture. */
     var sessionStart = 0L
         private set
+    /** Latest known session end, including a background transition that could not send a signal. */
+    var sessionEnd = 0L
+        private set
     /** Time of the latest capture, or zero before the first capture. */
     val lastSeen: Long get() = if (lastActivity == Long.MIN_VALUE) 0L else lastActivity
 
     /** The session an event at [at] would join, or null when it would open a new one. */
     fun sessionAt(at: Long): String? = if (lastActivity == Long.MIN_VALUE || at - lastActivity >= 1800000) null else session
+
+    /** Record the session end without extending the inactivity window or opening a session. */
+    fun backgrounded(at: Long) { if (sessionStart > 0) sessionEnd = maxOf(sessionEnd, at) }
 
     fun setUser(identifier: String?) { userHash = identifier?.takeIf { it.isNotEmpty() }?.let(Hash::hex) }
     fun capture(at: Long, type: String?, value: Double?, props: Map<String, Any?>, local: Map<String, String> = emptyMap(),
@@ -48,11 +54,12 @@ internal class CaptureState {
         var previousStart = 0L
         var previousEnd = 0L
         if (fresh) {
-            if (lastActivity != Long.MIN_VALUE && sessionStart > 0) { previousStart = sessionStart; previousEnd = lastActivity }
+            if (lastActivity != Long.MIN_VALUE && sessionStart > 0) { previousStart = sessionStart; previousEnd = sessionEnd }
             session = UUID.randomUUID().toString(); sessionStart = at
         }
         lastActivity = at
+        sessionEnd = at
         return Input(at, session, userHash, type, value, props, fresh, sessionStart, previousStart, previousEnd, local, extra)
     }
-    fun reset() { userHash = null; session = UUID.randomUUID().toString(); lastActivity = Long.MIN_VALUE; sessionStart = 0L }
+    fun reset() { userHash = null; session = UUID.randomUUID().toString(); lastActivity = Long.MIN_VALUE; sessionStart = 0L; sessionEnd = 0L }
 }
